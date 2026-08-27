@@ -39,34 +39,48 @@ rewrite.
 `npm run demo` against T3N testnet — every call below is made by the org-minted agent:
 
 ```
-🛑 DENIED   marker outside the endpoint's allowlist  ({{profile.ssn}})
-   marker rejected: 'ssn' is not in this endpoint's allowed_placeholders
-🛑 DENIED   marker in a non-profile namespace  ({{secret.resend_api_key}})
-   marker rejected: 'secret.resend_api_key' is not a profile marker
+🛑 DENIED   profile field outside the endpoint's allowlist  ({{profile.ssn}})
+            marker rejected: 'ssn' is not in this endpoint's allowed_placeholders
+🛑 DENIED   marker reaching for another namespace  ({{secret.resend_api_key}})
+            marker rejected: 'secret.resend_api_key' is not a profile marker
 🛑 DENIED   path the tenant never enumerated  (/domains)
-   path rejected: '/domains' is not in this endpoint's allowed_paths
+            path rejected: '/domains' is not in this endpoint's allowed_paths
 🛑 DENIED   endpoint that does not exist  (stripe)
-   unknown endpoint
+            unknown endpoint
 
-✅ ALLOWED  send to an address the agent never sees
-   {"data":{"id":"02d50e36-b261-4d69-a077-aeff244f48d8"},"status":200}
+── policy is per-ENDPOINT, not per-host ──────────────────────────────
+   'resend' and 'resend-notify' share a host AND a credential.
+   The same marker is allowed on one and refused on the other.
+
+✅ ALLOWED  {{profile.first_name}} via 'resend'        (allowlisted there)
+            {"data":{"id":"d7299ce6-668f-47f2-8e22-8f3f96c0f255"},"status":200}
+🛑 DENIED   {{profile.first_name}} via 'resend-notify' (allowlist is empty)
+            marker rejected: 'first_name' is not in this endpoint's allowed_placeholders
+✅ ALLOWED  no markers via 'resend-notify'             (allowed, returns nothing)
+            {"data":{},"status":200}
 ```
 
-A real email was delivered. The recipient address and the recipient's name were
-resolved inside the enclave from the data owner's profile — they appear nowhere in
-the agent's input, the MCP transport, the contract's memory, or the ledger.
+Real emails were delivered. The recipient's address and name were resolved inside the
+enclave from the data owner's profile — they appear nowhere in the agent's input, the MCP
+transport, the contract's memory, or the ledger.
+
+The last line is the deny-by-default response projection: `resend-notify` declares no
+`response_fields`, so a successful call returns a status code and an empty object. Even the
+upstream's message id is withheld.
 
 The ledger afterwards:
 
 ```
-denied     0  resend/emails   markers=["profile.ssn", …]        marker rejected: 'ssn' …
-denied     0  resend/emails   markers=["secret.resend_api_key"] not a profile marker
-denied     0  resend/domains  markers=[]                        path rejected: '/domains' …
-denied     0  stripe/emails   markers=[]                        unknown endpoint
-ok       200  resend/emails   markers=["first_name","last_name","verified_contacts.email.value"]
+denied     0  resend/emails         markers=["profile.ssn", …]        'ssn' not allowed here
+denied     0  resend/emails         markers=["secret.resend_api_key"] not a profile marker
+denied     0  resend/domains        markers=[]                        path not enumerated
+denied     0  stripe/emails         markers=[]                        unknown endpoint
+ok       200  resend/emails         markers=["first_name","last_name","verified_contacts.email.value"]
+denied     0  resend-notify/emails  markers=["profile.first_name", …] 'first_name' not allowed here
+ok       200  resend-notify/emails  markers=[]
 ```
 
-Marker *names* are recorded. Marker *values* are not — the contract never had them.
+Marker *names* are recorded. Marker *values* were never available to record.
 
 ## Quick start
 
@@ -133,7 +147,7 @@ Three decisions came out of measuring the platform, not reading about it:
 | `scripts/deploy.ts` | idempotent deploy; owns the `contract_id` ledger |
 | `scripts/doctor.ts` | pre-flight health check |
 | `scripts/demo.ts` | the run shown above |
-| `agentgate.config.json` | every endpoint and grant, declaratively |
+| `agentgate.config.json` | every endpoint and grant, declaratively (2 endpoints, contrasting policies) |
 | `deployments.json` | committed ledger of every `contract_id` ever issued |
 | `docs/BUGS.md` | 13 findings against the platform |
 | `docs/ARCHITECTURE.md` | why the enclave boundary sits where it does |

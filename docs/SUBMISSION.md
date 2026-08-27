@@ -68,20 +68,36 @@ The agent's signing key was minted inside the TEE and never left it.
 🛑 DENIED   endpoint that does not exist  (stripe)
             unknown endpoint
 
-✅ ALLOWED  agent emails a person whose address it cannot see
-            {"data":{"id":"ce010bbe-5ac5-4784-aebc-acb2194d4f33"},"status":200}
+── policy is per-ENDPOINT, not per-host ──────────────────────────────
+   'resend' and 'resend-notify' share a host AND a credential.
+   The same marker is allowed on one and refused on the other.
+
+✅ ALLOWED  {{profile.first_name}} via 'resend'        (allowlisted there)
+            {"data":{"id":"d7299ce6-668f-47f2-8e22-8f3f96c0f255"},"status":200}
+🛑 DENIED   {{profile.first_name}} via 'resend-notify' (allowlist is empty)
+            marker rejected: 'first_name' is not in this endpoint's allowed_placeholders
+✅ ALLOWED  no markers via 'resend-notify'             (allowed, returns nothing)
+            {"data":{},"status":200}
 ```
 
-**A real email was delivered.** The recipient's address and name were resolved inside the
-enclave from the data owner's profile. They appear nowhere in the agent's input, the MCP
-transport, the contract's memory, or the ledger:
+Real emails were delivered. The recipient's address and name were resolved inside the
+enclave from the data owner's profile — they appear nowhere in the agent's input, the MCP
+transport, the contract's memory, or the ledger.
+
+The last line is the deny-by-default response projection: `resend-notify` declares no
+`response_fields`, so a successful call returns a status code and an empty object. Even the
+upstream's message id is withheld.
+
+The ledger afterwards:
 
 ```
-denied     0  resend/emails   markers=["profile.ssn", …]
-denied     0  resend/emails   markers=["secret.resend_api_key", …]
-denied     0  resend/domains  markers=[]
-denied     0  stripe/emails   markers=[]
-ok       200  resend/emails   markers=["first_name","last_name","verified_contacts.email.value"]
+denied     0  resend/emails         markers=["profile.ssn", …]        'ssn' not allowed here
+denied     0  resend/emails         markers=["secret.resend_api_key"] not a profile marker
+denied     0  resend/domains        markers=[]                        path not enumerated
+denied     0  stripe/emails         markers=[]                        unknown endpoint
+ok       200  resend/emails         markers=["first_name","last_name","verified_contacts.email.value"]
+denied     0  resend-notify/emails  markers=["profile.first_name", …] 'first_name' not allowed here
+ok       200  resend-notify/emails  markers=[]
 ```
 
 Marker *names* are recorded. Marker *values* were never available to record.
@@ -104,7 +120,12 @@ introspection path can tell you. So:
   registration when the wasm hash is unchanged — **~160 credits instead of ~1,850**.
 - **`scripts/doctor.ts`** verifies functionally, by asking the contract to read one of its
   own maps, rather than trusting metadata that doesn't exist. Exits non-zero on failure.
-- **Adding an endpoint is one JSON block and no Rust.**
+- **Adding an endpoint is one JSON block and no Rust.** Demonstrated: `resend-notify` was
+  added after the contract was already deployed. Output from that run:
+  ```
+  register  SKIP (wasm unchanged, id 753, v0.1.0) — saves ~1700 credits
+  endpoint  SET  resend-notify -> https://api.resend.com paths=["/emails"]
+  ```
 - **9 native policy tests** run with no network and no credits.
 
 ```bash

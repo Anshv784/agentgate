@@ -57,11 +57,21 @@ show("path the tenant never enumerated  (/domains)",
 show("endpoint that does not exist  (stripe)",
   await call("invoke-endpoint", { endpoint: "stripe", path: "/emails", body: email() }));
 
-console.log("\n── the real thing ".padEnd(72, "─"));
-show("agent emails a person whose address it cannot see",
+console.log("\n── policy is per-ENDPOINT, not per-host ".padEnd(72, "─"));
+console.log("   'resend' and 'resend-notify' share a host AND a credential.");
+console.log("   The same marker is allowed on one and refused on the other.\n");
+show("{{profile.first_name}} via 'resend'        (allowlisted there)",
   await call("invoke-endpoint", { endpoint: "resend", path: "/emails", body: email() }));
+show("{{profile.first_name}} via 'resend-notify' (allowlist is empty)",
+  await call("invoke-endpoint", { endpoint: "resend-notify", path: "/emails", body: email() }));
+show("no markers via 'resend-notify'             (allowed, but returns nothing)",
+  await call("invoke-endpoint", { endpoint: "resend-notify", path: "/emails", body: {
+    from: "onboarding@resend.dev", to: ["anshv784@gmail.com"],
+    subject: "System notice", html: "<p>A build finished. No personal data in this message.</p>" } }));
 
 console.log("\n── ledger (written in-enclave; the agent cannot edit it) ".padEnd(72, "─"));
-const audit: any = await call("audit-list", { limit: 30 });
-for (const e of audit?.entries ?? [])
+// audit-list scans lexicographically from the start, so `limit` returns the
+// OLDEST entries. Slice client-side for the newest. Noted in HANDOVER.
+const audit: any = await call("audit-list", { limit: 500 });
+for (const e of (audit?.entries ?? []).slice(-7))
   console.log(`  ${e.outcome.padEnd(8)} ${String(e.status).padStart(3)}  ${e.endpoint}${e.path.padEnd(9)} markers=${JSON.stringify(e.markers)}  ${clip(e.detail, 60)}`);

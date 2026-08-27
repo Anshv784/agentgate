@@ -91,6 +91,9 @@ the MCP server runs wherever you run it.
 - The audit ledger records `profile.x` for denials and `x` for successes — cosmetic
   inconsistency in `gateway.rs`, batched for the next contract change rather than
   burning a registration on it.
+- `audit-list` scans lexicographically from the start, so `limit` returns the **oldest**
+  entries, not the newest. `scripts/demo.ts` slices client-side. A contract-side reverse
+  scan is the proper fix; batched with the item above.
 - `contract-probe/` is a diagnostic that deliberately echoes resolved PII to a public
   echo service to map the placeholder surface. Kept as evidence for the bug report.
   **Do not run it against a profile with real data.**
