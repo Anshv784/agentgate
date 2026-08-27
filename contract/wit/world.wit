@@ -1,0 +1,44 @@
+/// AgentGate — a governed outbound tool-call gateway for AI agents.
+///
+/// An agent never names a URL, never holds a credential, and never sees
+/// user PII. It names a pre-registered *endpoint* and supplies a body that
+/// may contain `{{profile.<field>}}` markers. The contract resolves the
+/// credential from its sealed KV map, checks every marker against that
+/// endpoint's allowlist, lets the host substitute PII inside the enclave,
+/// filters the upstream response down to declared fields, and appends an
+/// audit entry the agent cannot edit.
+///
+/// Only `http-with-placeholders` is imported: it subsumes plain `http` when a
+/// body carries no markers, so the capability surface stays as small as possible.
+package z:agentgate@0.1.0;
+
+world agentgate {
+    import host:tenant/tenant-context@1.0.0;
+    import host:interfaces/logging@2.1.0;
+    import host:interfaces/kv-store@2.1.0;
+    import host:interfaces/http-with-placeholders@2.1.0;
+
+    export contracts;
+}
+
+interface contracts {
+    record generic-input {
+        input:        option<list<u8>>,
+        user-profile: option<list<u8>>,
+        context:      option<list<u8>>,
+    }
+
+    /// Perform a governed call to a registered endpoint.
+    /// Input  (JSON): { endpoint, path, method?, body? }
+    /// Output (JSON): { status, data, audit_seq }
+    invoke-endpoint: func(req: generic-input) -> result<list<u8>, string>;
+
+    /// Read back the append-only audit ledger (newest last).
+    /// Input  (JSON): { limit? }
+    /// Output (JSON): { entries: [...] }
+    audit-list: func(req: generic-input) -> result<list<u8>, string>;
+
+    /// List registered endpoint names and their policy, minus any secret.
+    /// Output (JSON): { endpoints: [...] }
+    endpoint-list: func(req: generic-input) -> result<list<u8>, string>;
+}

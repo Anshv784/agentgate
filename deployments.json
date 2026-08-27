@@ -1,0 +1,14 @@
+{
+  "z:ae94de9bdfddc5e8ae1c75d41404425f01f6c005:agentgate": {
+    "tail": "agentgate",
+    "history": [
+      {
+        "version": "0.1.0",
+        "contract_id": 753,
+        "wasm_sha256": "f606453692f18c6dc32c15fd737cd727805204920e5c8a6277d36aa7326b9dbe",
+        "at": "2026-08-27T05:33:12.906Z"
+      }
+    ],
+    "version": "0.1.0"
+  }
+}

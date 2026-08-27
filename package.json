@@ -1,0 +1,25 @@
+{
+  "name": "t3n-agentgate",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "cd contract && cargo test --target $(rustc -vV | awk '/^host:/{print $2}')",
+    "deploy": "tsx scripts/deploy.ts",
+    "doctor": "tsx scripts/doctor.ts",
+    "demo": "tsx scripts/demo.ts",
+    "mcp": "tsx mcp/server.ts",
+    "build": "cd contract && cargo build --target wasm32-wasip2 --release"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@terminal3/t3n-sdk": "^5.2.0",
+    "dotenv": "^17.4.2",
+    "tsx": "^4.23.12",
+    "zod": "^4.4.3"
+  }
+}

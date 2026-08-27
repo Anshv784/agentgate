@@ -1,0 +1,699 @@
+// Held at @2.1.0 deliberately so existing contracts (user / vc /
+// agent-registry / organisation / payroll), all pinned to @2.1.0
+// in their per-contract wit/deps copies, continue to link against
+// the host runtime. The new T3-TS-029 §6.3 / §7.1–§7.3 interfaces
+// (`profile-ref`, `vp.verify`, `clock`,
+// `authorisation.check-authorized`) are added at @2.1.0 — adding
+// interfaces is structurally additive and the wasmtime linker
+// resolves a contract's @2.1.0 import against the host's @2.1.0
+// surface regardless of how many interfaces the host hosts.
+//
+// The canonical source-of-truth file at `tee_contracts/wit/host-
+// interfaces/package.wit` is at @2.2.0 to flag the spec-level
+// state ("these are the latest shapes"); contracts that opt into
+// any of the new interfaces will copy from canonical and bump
+// their world.wit + their host-interfaces dep folder name +
+// CONTRACT_VERSION in lockstep at that point. Bumping every
+// contract pre-emptively is deferred per the staging-no-major-
+// bumps memory rule.
+package host:interfaces@2.1.0;
+
+interface http {
+  enum verb {
+    get,
+    post,
+    put,
+    patch,
+    delete
+  }
+
+  record request {
+    method: verb,
+    url: string,
+    headers: option<list<tuple<string, string>>>,
+    payload: option<list<u8>>
+  }
+
+  record response {
+    code: u16,
+    payload: list<u8>
+  }
+
+  call: func(request: request) -> result<response, string>;
+}
+
+/// MAT-1627 — PII-safe HTTP for tenant contracts (T3-TS-029 §6.2).
+///
+/// Body bytes may contain `{{profile.<field>}}` markers that the host
+/// substitutes from the calling user's profile at dispatch time. The
+/// contract WASM never holds plaintext PII — substitution happens on
+/// the host stack between manifest validation and the outbound
+/// reqwest call, so a compromised contract that tries to read the
+/// substituted bytes back finds only the unresolved template.
+///
+/// Access control is the agent delegation grant (`agent-auth-update`,
+/// scoped per-agent/per-contract/per-function): the grant gates which
+/// contract may act on the user's profile. The host enforces only the
+/// hard `profile`-namespace gate — `{{secrets.<x>}}` and any namespace
+/// other than `profile` is rejected with `placeholder-denied`.
+///
+/// Egress is gated by the existing per-contract `http_allow_list`
+/// (same allowlist plain `http` uses), so a contract opted into both
+/// `http` and `http-with-placeholders` shares one egress policy.
+interface http-with-placeholders {
+  enum verb {
+    get,
+    post,
+    put,
+    patch,
+    delete
+  }
+
+  record request {
+    method: verb,
+    url: string,
+    headers: option<list<tuple<string, string>>>,
+    payload: option<list<u8>>
+  }
+
+  record response {
+    code: u16,
+    payload: list<u8>
+  }
+
+  variant http-error {
+    /// Target host is not on the contract's `http_allow_list`. Payload
+    /// is the offending host string for operator diagnostics.
+    egress-denied(string),
+    /// A placeholder referenced a namespace other than `profile`, or
+    /// used a malformed marker (nested / non-snake-case field). Payload
+    /// identifies the offending marker.
+    placeholder-denied(string),
+    /// A `{{profile.<field>}}` marker resolved to no value on the
+    /// calling user's profile. Payload names the field. Distinct from
+    /// `placeholder-denied` so the contract can surface
+    /// "your profile is missing X" UX rather than "you're not allowed
+    /// to read X".
+    placeholder-unknown(string),
+    /// The current execution has no `pii_did` bound (admin / bootstrap /
+    /// unauthenticated path). No wall-clock fallback, no admin override
+    /// — there is no user profile to substitute from.
+    placeholder-no-user-context,
+    /// Upstream HTTP failure (transport, TLS, parse). Payload is a
+    /// short reason string suitable for logging; PII is NEVER included.
+    upstream-error(string),
+  }
+
+  call: func(request: request) -> result<response, http-error>;
+}
+
+interface logging {
+  /// Log a message to the console
+  info: func(message: string) -> result<_, string>;
+
+  /// Log a debug message
+  debug: func(message: string) -> result<_, string>;
+
+  /// Log an error message
+  error: func(message: string) -> result<_, string>;
+}
+
+interface user-profile {
+  upsert: func(user-did: list<u8>, user-profile: list<u8>) -> result<string, string>;
+}
+
+/// Interface for linking an authenticator hash to a DID.
+interface did-registry {
+  /// Compute email authenticator hash and associate it to the DID on-chain.
+  /// `authenticator-str`: Is the authenticator string in plain format, not the hash of the authenticator.
+  /// i.e. 'email:test@email.com' (email authenticator) | 'oidc:email@oidc.com' (oidc authenticator), etc.
+  /// Authenticator hash should be calculated by implementation of this function
+  link-authenticator: func(user-did: list<u8>, authenticator-str: string) -> result<_, string>;
+}
+
+/// Interface for reading/writing the on-chain agent registry using the session user DID.
+interface agent-registry {
+  /// Register or update the agent URI for the given DID.
+  register-agent: func(user-did: list<u8>, agent-uri: string, owner-eth-address: list<u8>) -> result<string, string>;
+}
+
+/// Interface for updating agent script authorisations on-chain.
+interface agent-auth {
+  /// The payload is a JSON document encoded as UTF-8 bytes.
+  ///
+  /// The JSON schema is:
+  /// {
+  ///   "agents": list<{
+  ///     "agentDid": string,
+  ///     "scripts": list<{
+  ///       "scriptName": string,
+  ///       "versionReq": option<string>,
+  ///       "functions": option<list<string>>,
+  ///       "allowedHosts": option<list<string>>
+  ///     }>
+  ///   }>
+  /// }
+  update-authorisations: func(user-did: list<u8>, payload: list<u8>) -> result<string, string>;
+}
+
+interface signing {
+  /// Hashes the message with Keccak-256 and signs the hash
+  /// using the pre-configured cluster-wide secp256k1 signing key.
+  ///
+  /// Returns a JSON blob `{ signature, pubKey: {x, y} }` encoded as
+  /// UTF-8 bytes. For Ethereum-native raw r||s||v use `sign-as-user`.
+  sign: func(message: list<u8>) -> result<list<u8>, sign-error>;
+
+  record sign-sd-jwt-vc-request {
+    payload: string,
+    disclosable-claims: list<string>,
+    holder-did: string,
+    issuer-provider-id: option<string>,
+    /// When true, the host derives `cnf.jwk` from the calling user's
+    /// P-256 custodial public key (fetched from `user_secrets[pii_did]`)
+    /// and binds the SD-JWT to that holder. When false or absent,
+    /// the SD-JWT is issued unbound. Replaces the pre-2.0.0
+    /// `holder-binding-key-material: option<string>` field, which
+    /// shipped the private key across the WIT boundary — see
+    /// T3-TS-027 §5.8.
+    bind-to-holder: bool,
+  }
+
+  sign-sd-jwt-vc: func(request: sign-sd-jwt-vc-request) -> result<string, sign-sd-jwt-vc-error>;
+
+  /// Sign `message` as the user bound to the current execution
+  /// context (`pii_did`). The calling contract's script name is
+  /// checked against the host-configured allowlist before any read
+  /// of `user_wallets`.
+  ///
+  /// Under T3-TS-028 the host resolves the user's PRIMARY wallet
+  /// address via `user_wallets[pii_did].primary` and then reads
+  /// `wallet_secrets[primary]` for the signing key. Identity-bearing;
+  /// secondaries inherited through merges are NOT reachable from
+  /// this entry point — use `sign-with-wallet` instead.
+  ///
+  /// Returns raw 65-byte Ethereum-native signature: `r[32] || s[32] || v[1]`.
+  /// The host applies keccak-256 to `message` and ECDSA-signs the
+  /// hash — nothing more. Pre-image / envelope assembly (EIP-191
+  /// personal-sign, EIP-155, EIP-712, RLP tx encoding) is the
+  /// caller's responsibility, so the same primitive can serve any
+  /// envelope shape without inheriting a foreign prefix policy.
+  /// `tee:delegation` builds the EIP-191 prefix via
+  /// `delegation_types::eip191_prefix` before calling here.
+  ///
+  /// See T3-TS-027 §5.5–§5.6 + T3-TS-028 §7.1 + T3-TS-030 §2.
+  sign-as-user: func(message: list<u8>) -> result<list<u8>, sign-as-user-error>;
+
+  /// Sign `message` with a specific wallet the caller DID owns
+  /// (primary OR any secondary inherited through `merge-profiles`).
+  /// The host verifies `wallet-address` is in the caller's
+  /// `user_wallets[pii_did]` membership before reading
+  /// `wallet_secrets[wallet-address]`. Returns `not-authorized` if
+  /// the address is not in the set, `malformed-address` if it is
+  /// not exactly 20 bytes. Signs nothing ambient: the caller must
+  /// name the address explicitly. See T3-TS-028 §7.1–§7.2.
+  sign-with-wallet: func(wallet-address: list<u8>, message: list<u8>)
+    -> result<list<u8>, sign-as-user-error>;
+
+  /// Return the 20-byte Ethereum address for the user bound to the
+  /// current execution context. Under T3-TS-028 this is the DID's
+  /// PRIMARY wallet — stored directly in `user_wallets[pii_did]`,
+  /// no key read needed. Returns `none` if the user has no wallet yet.
+  get-user-eth-address: func() -> result<option<list<u8>>, sign-as-user-error>;
+
+  /// Enumerate every wallet the caller DID can sign for, primary
+  /// first. See T3-TS-028 §7.1.
+  list-user-wallets: func() -> result<user-wallets, sign-as-user-error>;
+
+  record user-wallets {
+    /// 20-byte identity-bearing primary address.
+    primary: list<u8>,
+    /// Addresses absorbed through prior `merge-profiles`, insertion
+    /// order (most recent last).
+    secondary: list<list<u8>>,
+  }
+
+  /// Probe whether a wallet exists for a given DID. Checks
+  /// `user_wallets[did]` presence under T3-TS-028.
+  has-user-wallet: func(did: list<u8>) -> result<bool, sign-as-user-error>;
+
+  // NOTE: no `delete-user-wallet` binding. Under T3-TS-028,
+  // `remove-user` refuses when the DID owns wallets, and the
+  // explicit `remove-user-with-wallet-abandonment` path clears the
+  // `user_wallets` index through the contract's own ambient tx.
+  // `wallet_secrets[*]` is NEVER deleted by any path. See T3-TS-028 §6.
+
+  /// Error variants for `sign`. Migrated to typed errors per
+  /// T3-TS-027 §5.8.
+  variant sign-error {
+    no-signing-key,
+    signing-failed(string),
+    pubkey-format,
+    encoding-failed(string),
+  }
+
+  /// Error variants for `sign-sd-jwt-vc`. Migrated to typed errors
+  /// per T3-TS-027 §5.8.
+  variant sign-sd-jwt-vc-error {
+    unknown-issuer(string),
+    invalid-payload(string),
+    holder-binding-invalid(string),
+    conceal-claims-failed(string),
+    sign-failed(string),
+    current-time-failed(string),
+  }
+
+  /// Error variants for `sign-as-user` / `sign-with-wallet` /
+  /// `get-user-eth-address` / `list-user-wallets` /
+  /// `has-user-wallet`. `not-authorized` and `malformed-address`
+  /// added in 2.1.0 for `sign-with-wallet`.
+  variant sign-as-user-error {
+    no-execution-context,
+    contract-not-allowlisted(string),
+    no-wallet,
+    kv-unavailable(string),
+    signing-failed(string),
+    /// `sign-with-wallet` was called with an address that is not
+    /// in the caller DID's `user_wallets[pii_did]` primary or
+    /// secondary membership.
+    not-authorized,
+    /// `sign-with-wallet` was called with `wallet-address` whose
+    /// length is not exactly 20 bytes.
+    malformed-address,
+  }
+}
+
+interface authorisation {
+  /// Typed reasons check-authorized can refuse — added in T3-TS-029
+  /// §7.3 so guests branch on the rejection cause instead of
+  /// inferring it from a bare boolean. is-authorized stays for the
+  /// migration window; new contracts use check-authorized.
+  variant auth-error {
+    denied-unauthorized(string),
+    denied-no-allowlist,
+    denied-scope(string),
+    denied-revoked,
+  }
+
+  /// Deprecated — retained while contracts migrate to check-authorized.
+  is-authorized: func(host: list<string>) -> bool;
+
+  /// Typed-error replacement for is-authorized (T3-TS-029 §7.3).
+  check-authorized: func(host: list<string>) -> result<_, auth-error>;
+}
+
+/// T3-TS-029 §6.3 — profile-ref (host:interfaces@2.2.0). Generic primitive for
+/// picking one of many profile candidates (a credential, a payment method, an
+/// address, a wallet) without exposing the plaintext to the guest.
+/// `list-handles(scope, vc_id)` returns opaque (handle, metadata) tuples; the
+/// contract picks one. Handles are per-execution; cross-execution lookup
+/// returns `unknown-handle`.
+interface profile-ref {
+  variant ref-error {
+    unknown-scope(string),
+    scope-denied(string),
+    unknown-handle(string),
+    profile-unavailable,
+  }
+
+  record handle-meta {
+    handle: string,
+    metadata: list<u8>,
+  }
+
+  list-handles: func(scope: string, vc-id: string) -> result<list<handle-meta>, ref-error>;
+}
+
+/// Cluster-consistent timestamp source for non-session contracts (T3-TS-029 §7.2).
+/// Reads `TxMeta.cluster_timestamp` set at `begin_tx` on the leader; never wall-clock
+/// (would diverge across Raft replicas and break OCC commit). Calls outside a tx
+/// scope return `no-tx-context` — no wall-clock fallback. Added in
+/// host:interfaces@2.2.0 so non-session contracts (e.g. `tee:agent-connect`) can
+/// enforce expiry checks and rate-limit windows without depending on
+/// `host:session-interfaces`.
+interface clock {
+  variant clock-error {
+    no-tx-context,
+  }
+
+  now-ms: func() -> result<u64, clock-error>;
+}
+
+/// MAT-1527 — caller-identity-preserving contract-to-contract dispatch
+/// (host:interfaces@2.2.0). Lets contract A invoke contract B's export
+/// inside the SAME open OCC transaction as the outer call.
+///
+/// Identity model: pass-through. The inner call sees the outer's
+/// `user_did` / `agent_did` / `vc_id` unchanged — as if the agent had
+/// called the target contract directly via JSON-RPC. The calling
+/// contract has no mechanism to forge a different identity.
+///
+/// Tx atomicity: the inner call shares the outer's `GovernedTx`. KV
+/// writes from the inner contract land in the same Raft tx; an inner
+/// failure propagates as `invoke-error` and the host returns that
+/// error to the outer contract — which is then responsible for
+/// surfacing the failure (a typical pattern is to return the error
+/// from the outer's export, which trips the outer's rollback at the
+/// service-layer boundary).
+///
+/// Governance: a kv-governor allowlist (`CONTRACTS_INVOKE_ALLOWLIST`)
+/// gates which calling contracts can invoke which target contracts,
+/// including a per-pair `allowed_functions` and `max_depth`. Default-
+/// deny: a `(caller, target)` pair without an allowlist row cannot
+/// invoke. Reentrancy (caller already on the invocation stack) and
+/// depth-cap violations refuse with their own typed variants.
+interface contracts-call {
+  record invoke-request {
+    /// Target contract name, e.g. `tee:agent-connect/contracts`.
+    target-contract: string,
+    /// Export function name on the target, e.g. `commerce-intent-create`.
+    function-name: string,
+    /// JSON-encoded input the target function deserialises.
+    input: list<u8>,
+  }
+
+  variant invoke-error {
+    /// `(executing_contract, target_contract)` is absent from
+    /// `CONTRACTS_INVOKE_ALLOWLIST`, OR the row exists but does not
+    /// list `function-name` in `allowed_functions`. The payload is a
+    /// human-readable hint identifying which pair / function was
+    /// rejected; do NOT use it for control-flow.
+    not-allowlisted(string),
+    /// The current execution lacks an `executing_contract` (admin /
+    /// bootstrap / test paths). Reject so the iface cannot be reached
+    /// by non-contract callers.
+    no-execution-context,
+    /// Target contract is not registered (no SCRIPTS_MAP row) or no
+    /// version is resolvable. Distinct from `not-allowlisted` so
+    /// guests can distinguish "policy refused" from "no such target".
+    target-unknown(string),
+    /// The depth cap from the allowlist row was reached. Bound on the
+    /// runtime stack: A → B → C → … capped by the smallest `max_depth`
+    /// seen on the chain so far.
+    depth-exceeded,
+    /// The target contract is already on the invocation stack — a
+    /// cycle A → B → A would re-enter A. Refuse to prevent runaway
+    /// loops and to keep reasoning about state mutation tractable.
+    reentrant(string),
+    /// The inner contract function ran to completion but returned an
+    /// error response (the target's own error shape, serialised as a
+    /// string). The OCC tx is NOT auto-rolled back by the host — the
+    /// outer contract decides whether to surface the failure (which
+    /// will roll back at the service boundary) or absorb it.
+    inner-failed(string),
+    /// The inner contract trapped (panic, fuel exhaustion, host-fn
+    /// abort). The tx state is salvageable but the inner write-set
+    /// is discarded — host will surface this and the outer contract
+    /// should typically return its own error to roll back.
+    inner-trapped(string),
+    /// `input` bytes are not valid JSON, or the target's response
+    /// failed to serialise back to bytes.
+    encoding-failed(string),
+  }
+
+  /// Invoke another contract's export from this contract's tx context.
+  /// Returns the target function's JSON-encoded response on success.
+  invoke: func(req: invoke-request) -> result<list<u8>, invoke-error>;
+}
+
+/// Query the tx-history projection engine behind `history.query`.
+interface audit {
+  query: func(request: list<u8>) -> result<list<u8>, string>;
+}
+
+/// Query the analytics provider behind `analytics.*`.
+interface analytics {
+  snapshot: func() -> result<list<u8>, string>;
+  refresh: func() -> result<list<u8>, string>;
+  range: func(request: list<u8>) -> result<list<u8>, string>;
+}
+
+/// Trigger leader-side consensus / orchestration helpers needed by
+/// the remaining unified admin actions.
+interface consensus-trigger {
+  indexing-backfill: func(request: list<u8>) -> result<list<u8>, string>;
+  indexing-activate: func(request: list<u8>) -> result<list<u8>, string>;
+  dkg-trigger: func(request: list<u8>) -> result<list<u8>, string>;
+}
+
+/// Read operator-supplied per-provider configuration (MAT-1284).
+///
+/// Returns the opaque JSON value stored under `auth.providers.<provider-id>`
+/// in the operator's TOML config (see `node/config/src/auth.rs`).  The
+/// shape of the JSON is provider-specific; the host does not parse it.
+///
+/// Mirrors the existing session-side `host:session-ops/fetch-provider-config`
+/// so non-session contracts (e.g. `tee:user`) can read outbound provider
+/// config without depending on `host:session-ops`.
+interface provider-config {
+  /// Returns the raw JSON bytes of the provider config, or an error
+  /// string if the provider is not configured.
+  fetch: func(provider-id: string) -> result<list<u8>, string>;
+}
+
+/// Channel-agnostic OTP verification interface (MAT-1198).
+interface otp {
+  enum otp-channel {
+    email,
+    sms,
+  }
+
+  record verify-request {
+    user-did: list<u8>,
+    profile: list<u8>,
+    channel: otp-channel,
+    new-contact: option<string>,
+    current-contact: option<string>,
+    otp-code: option<string>,
+    authenticated-contact: option<string>,
+    is-mock-mode: bool,
+    otp-timeout-in-sec: option<u32>,
+    skip-otp: bool,
+  }
+
+  enum otp-status {
+    otp-pending,
+    otp-failed,
+    otp-expired,
+  }
+
+  record verify-response {
+    otp-status: option<otp-status>,
+    profile: option<list<u8>>,
+    expires-at-sec: option<u64>,
+    is-new-profile: option<bool>,
+  }
+
+  verify: func(request: verify-request) -> result<verify-response, string>;
+}
+
+/// Interface for complete user data removal.
+interface user-removal {
+  /// Remove all user data.
+  remove-user: func(user-did: list<u8>) -> result<string, string>;
+}
+
+interface vp {
+  record sign-vp-request {
+    unsigned-sd-jwt: string,
+    nonce: string,
+    audience: string,
+    /// NOTE: pre-2.0.0 this record carried `holder-binding-key-material:
+    /// string` — the user's P-256 private key, handed across the WIT
+    /// boundary so the contract could forward it. T3-TS-027 §5.8
+    /// removes that field: the host fetches the custodial sk from
+    /// `user_secrets[pii_did]` instead, so contracts never see plaintext
+    /// key material.
+  }
+
+  sign: func(request: sign-vp-request) -> result<string, string>;
+
+  record submit-vp-request {
+    response-uri: string,
+    vp-token: string,
+    state: option<string>,
+    response-mode: option<string>,
+    client-metadata-jwks: option<string>,
+  }
+
+  record submit-vp-response {
+    code: u16,
+    payload: list<u8>,
+  }
+
+  submit: func(request: submit-vp-request) -> result<submit-vp-response, string>;
+
+  /// T3-TS-029 §7.1 — vp.verify (host:interfaces@2.2.0). Verifies an
+  /// inbound VP token; thin wrapper over session::auth::verify_vp so
+  /// both the host import and the service-layer auth path share one
+  /// verifier.
+  record verify-vp-request {
+    vp-token: string,
+    audience: string,
+    nonce: string,
+    issuer: string,
+  }
+
+  variant verify-vp-error {
+    signature-invalid,
+    audience-mismatch,
+    nonce-mismatch,
+    expired,
+    not-yet-valid,
+    issuer-untrusted,
+    malformed(string),
+  }
+
+  record verify-vp-response {
+    holder-did: string,
+    claims: list<u8>,
+    issued-at: u64,
+    expires-at: option<u64>,
+  }
+
+  verify: func(request: verify-vp-request) -> result<verify-vp-response, verify-vp-error>;
+}
+
+/// Key-value store for CCF-backed contract state.
+///
+/// Data is organised into logical **maps** (e.g. `"users"`,
+/// `"auth"`).  The host combines `map-name` + `key` into a single
+/// physical key internally.
+interface kv-store {
+    get: func(map-name: string, key: list<u8>) -> result<option<list<u8>>, string>;
+    put: func(map-name: string, key: list<u8>, value: list<u8>) -> result<_, string>;
+    /// Remove the entry for `map-name`/`key`. Returns `true` if a value
+    /// existed before deletion, `false` if the key was already absent.
+    delete: func(map-name: string, key: list<u8>) -> result<bool, string>;
+    /// Set an application-defined claims digest for this transaction.
+    /// The digest must be exactly 32 bytes (SHA-256). It is included
+    /// in the Merkle leaf so clients can verify receipts offline.
+    set-claims-digest: func(digest: list<u8>) -> result<_, string>;
+
+    /// Half-open range scan `[start, end)` over `map-name`, returning
+    /// `(key, value)` pairs in lexicographic order. `limit > 0` caps
+    /// the result count (matches the host's bookkeeping budget for
+    /// the scan); a `limit` of `0` is rejected. The host borrows the
+    /// snapshot view so reads do NOT enter the tx's read-set —
+    /// concurrent admin scans against the same range will not
+    /// trip false `WriteConflict`s on each other.
+    ///
+    /// Reserved host-iface maps (outbox, etc.) refuse `scan` for the
+    /// same reason `get` / `put` / `delete` refuse them: the maps
+    /// must only be reached through their dedicated iface.
+    ///
+    /// **Note:** the scan is one-shot — there is no cursor / paging
+    /// across calls. Callers that need to walk a map larger than
+    /// `limit` should split the range and re-call with the next
+    /// `start`. Admin flows that need cap-bounded enumeration
+    /// (cascade-revoke, analytics snapshots, history) call this
+    /// inside a single tx and the budget is enforced contract-side
+    /// before re-calling for the next slice.
+    scan: func(
+        map-name: string,
+        start: list<u8>,
+        end: list<u8>,
+        limit: u32,
+    ) -> result<list<tuple<list<u8>, list<u8>>>, string>;
+}
+
+/// T3-TS-030 §8 token capability — read-only view of the calling
+/// DID's T3N credit balance. Lets a contract show "you have N
+/// tokens left this call" UX before kicking off a host-fn-heavy
+/// flow that would otherwise trap mid-execution on `OutOfCredit`.
+///
+/// Lock-in semantics (§7.2 step 4): `get-balance` returns the
+/// post-cap view (`B - cap_tokens`) during execution, not the
+/// pre-cap balance the chargepoint snapshotted. A recursive call
+/// inside the same Raft tx therefore cannot observe the pre-cap
+/// balance and double-spend.
+///
+/// Cross-DID reads (`get-account-balance`) require an explicit
+/// per-(reader, target) grant in
+/// `metering.balance-read-grants` cluster-config — the default
+/// posture is deny-all. No grants ship out of the box; the v1
+/// release covers `get-balance` only.
+interface token {
+  /// Wire shape for `u128`. WIT primitives top out at `u64`, so
+  /// the host splits the 128-bit balance into two `u64` halves.
+  /// Guests reassemble as `(hi as u128) << 64 | (lo as u128)`.
+  /// The host-side `BalanceRow` Rust struct keeps native `u128`
+  /// (T3-TS-030 §4) — the split is purely the wire shape exposed
+  /// to guest contracts.
+  record u128-le {
+    lo: u64,
+    hi: u64,
+  }
+
+  /// Wire shape for the `token:balances` row. Matches
+  /// `primitives::token::BalanceRow` minus the host-only
+  /// `last_settled_seq_no`, `version`, `credit_exhausted` fields
+  /// (which are bookkeeping for the projection / OCC / fast-skip
+  /// gate, not for guest consumption).
+  record balance-row {
+    available: u128-le,
+    reserved:  u128-le,
+  }
+
+  /// Errors `get-balance` and `get-account-balance` can surface.
+  variant balance-error {
+    /// The calling contract is not allow-listed for cross-DID
+    /// balance reads (only `get-account-balance` returns this;
+    /// `get-balance` reads the calling DID's own balance and is
+    /// always permitted when the runtime resolved a billing DID).
+    not-authorised,
+    /// The target DID has no `token:balances` row. Distinct from
+    /// "row exists with `available = 0`" — a freshly-seeded DID
+    /// returns `available: u128-le { lo: 0, hi: 0 }, reserved:
+    /// u128-le { lo: 0, hi: 0 }` rather than this error.
+    account-not-found,
+  }
+
+  /// Read the calling DID's own balance. The DID is the §7.2
+  /// billing DID resolved by the host pre-execution (`pii_did` on
+  /// self-call, `authenticated_did` on delegated). Guests cannot
+  /// influence the choice — preventing a compromised contract from
+  /// reading another DID's balance through a forged argument.
+  ///
+  /// During a metered invocation, the returned `available` is
+  /// `B - cap_tokens` (the §7.2 lock-in view), so successive
+  /// `get-balance` calls in the same execution see the budget the
+  /// contract still has to spend AFTER the current call's cap is
+  /// honoured. Outside metered execution, returns the snapshot
+  /// `available` directly.
+  get-balance: func() -> result<balance-row, balance-error>;
+
+  /// Read another DID's balance. Requires the calling contract +
+  /// caller-DID + target-DID triple to be allow-listed in
+  /// `metering.balance-read-grants` cluster config. v1 ships with
+  /// no grants by default — the default posture is deny-all.
+  get-account-balance: func(account: list<u8>) -> result<balance-row, balance-error>;
+}
+
+/// Ephemeral key-value state store, scoped to the current execution context.
+/// Values are not persisted across invocations.
+interface state {
+  get-state: func(key: string) -> result<option<list<u8>>, string>;
+  put-state: func(key: string, value: list<u8>) -> result<_, string>;
+  delete-state: func(key: string) -> result<_, string>;
+}
+
+world interfaces {
+  export http;
+  export http-with-placeholders;
+  export logging;
+  export signing;
+  export user-profile;
+  export did-registry;
+  export agent-registry;
+  export agent-auth;
+  export authorisation;
+  export provider-config;
+  export otp;
+  export user-removal;
+  export vp;
+  export kv-store;
+  export token;
+  export contracts-call;
+  export state;
+}

@@ -1,0 +1,282 @@
+# Bugs & doc defects — Terminal 3 ADK
+
+Environment: `@terminal3/t3n-sdk@5.2.0`, node `cn-api.sg.testnet.t3n.terminal3.io`,
+Node v24.7.0, macOS 15 (arm64), rustc 1.97.1, target `wasm32-wasip2`.
+Tenant `did:t3n:ae94de9b…c005`.
+
+---
+
+## 1. Host duplicates `Content-Type`, corrupting the header upstream — **severity: high**
+
+A contract that sets its own `Content-Type` (exactly as the docs and the official
+`z-tenant-flight` reference do) causes the upstream server to receive a doubled,
+malformed value.
+
+**Repro** — one contract, two calls differing only in whether the contract sets the header:
+
+| Contract sends | Upstream (`postman-echo.com/post`) receives | Upstream body parse |
+|---|---|---|
+| `headers: Some([("Content-Type","application/json")])` | `content-type: "application/json,application/json"` | **fails** — `data: {}` |
+| `headers: None` | `content-type: "application/json"` | succeeds — `data: {"probe":"no-placeholders"}` |
+
+The host appends its own `Content-Type` instead of respecting the contract's.
+RFC 9110 makes `application/json,application/json` an invalid media type; lenient
+servers ignore it, strict ones 415 or silently drop the body — as postman-echo does here.
+
+**Why it matters:** every documented example sets its own headers.
+`z-tenant-flight/src/booking.rs:104` passes `headers: Some(duffel_headers(&api_key))`,
+so the reference integration is shipping malformed Content-Type to Duffel.
+The failure is silent — you get HTTP 200 with an empty parsed body.
+
+**Workaround:** pass `headers: None` for the Content-Type, or set only headers the
+host doesn't inject (e.g. `Authorization`). Needs confirming which headers are injected.
+
+**Fix:** the host should replace, not append, a header the contract already set.
+
+---
+
+## 2. `listContracts()` returns names that `getContractVersion()` rejects — **severity: medium**
+
+Discovery output is not usable as dispatch input.
+
+```
+listContracts() reports:  tee:user @ 3.6.0
+getContractVersion(url, "tee:user")            -> 404 Not Found
+getContractVersion(url, "tee:user/contracts")  -> 3.6.0   ✓
+```
+
+Same for `tee:org-data` and `tee:agent-registry`. The `/contracts` suffix is required
+but appears nowhere in the SDK reference — only incidentally in a walkthrough snippet.
+
+**Worse:** three of the six advertised core contracts resolve in *neither* form —
+`tee:vc`, `tee:organisation`, `tee:agent-connect` all 404. So `listContracts()` advertises
+contracts that cannot be version-resolved at all, and therefore cannot be invoked
+via the documented `getContractVersion` → `execute` path.
+
+---
+
+## 3. `tips/placeholders-outbound-calls` ships Rust that cannot compile — **severity: medium**
+
+The page shows:
+
+```rust
+let resp = hwp::call(&hwp::Request {
+    method:  "POST".to_string(),          // WIT type is `enum verb`, not string
+    headers: vec![ ... ],                 // WIT type is `option<list<...>>`
+```
+
+Ground truth (`wit/deps/host-interfaces-2.1.0/package.wit`):
+
+```wit
+record request { method: verb, url: string,
+                 headers: option<list<tuple<string,string>>>, payload: option<list<u8>> }
+```
+
+`walkthrough/write-contract` has it right (`method: hwp::Verb::Post`, `headers: Some(...)`).
+The two pages contradict each other and the tips version is the wrong one.
+
+---
+
+## 4. Docs are a major version behind the SDK — **severity: medium**
+
+`reference.md` documents SDK ~3.x. Installed latest is **5.2.0**. Undocumented but present
+and working:
+
+| Symbol | Docs say |
+|---|---|
+| `tenant.maps.entrySet(tail, key, value)` | docs teach raw `executeControl("map-entry-set", …)` |
+| `tenant.contracts.listDetailed()` / `logs()` / `disable()` / `enable()` / `unregister()` | absent |
+| `t3n.getAuditEvents()` | "reported to exist, not confirmed" — it exists |
+| `t3n.getActivityLog()` / `exportActivityLog()` | absent |
+| `t3n.updateAgentAuth()` / `getAgentAuth()` | docs teach raw `execute({function_name:"agent-auth-update"})` |
+| `t3n.submitUserInput()` / `otpRequest()` / `otpVerify()` | absent — this is the only way to populate a profile |
+| `t3n.getBalance()` | absent |
+| `kv-store.scan()` / `set-claims-digest()` | absent from the Host API table |
+
+Conversely, the community-reported symbols in `reference.md`
+(`buildDelegationCredential`, `DelegationCustodialClient`) are **not** in 5.2.0.
+
+---
+
+## 5. `contract_id` still unreadable after registration — **confirmed, not fixed**
+
+`register()` returns `{name, contract_id}`, but `DetailedContract` (from `listDetailed()`)
+exposes only `{name, short_name, version, status, descriptor}` — no `contract_id`.
+Re-registering a tail mints a new id (observed: `751` → `752` across two registrations of
+`z:…:probe`), so map ACLs scoped to the old id go stale with no API to recover the new one.
+The `register-contract` doc flags this; it is still true in 5.2.0.
+
+---
+
+## 6. An SDK throw dumps ~2.1 MB of obfuscated source to stderr — **severity: low (DX)**
+
+`dist/index.esm.js` is minified *and* identifier-obfuscated. Any uncaught throw prints the
+whole bundle as the stack frame — it flooded a terminal and would flood CI logs. Source maps
+or a non-obfuscated build would fix it.
+
+---
+
+## 7. `getSelfEthAddress()` disagrees with the key's own address — **severity: low, unconfirmed**
+
+`eth_get_address(T3N_API_KEY)` → `0x83e911a2…f72b` (the address that authenticates).
+`t3n.getSelfEthAddress()` → `0x9a2cd86a…c4ee`.
+Unclear whether the second is a distinct managed/custodial wallet or a bug. Undocumented either way.
+
+---
+
+## Not a bug (recorded so the next person doesn't chase it)
+
+- **Nested placeholders work.** The `placeholder-denied` WIT doc comment says markers fail on
+  "nested / non-snake-case field", which reads as though `{{profile.verified_contacts.email.value}}`
+  (used throughout the docs) would be rejected. It resolves correctly. The comment is misleading,
+  not the implementation.
+- **`submitUserInput` needs no OTP** for non-email fields — `{first_name, last_name,
+  country_of_residence}` upserted fine and returned `{txHash, userFound:true}`.
+
+## Design note (not a defect)
+
+`http-with-placeholders` protects the **outbound** path only. The upstream response is returned
+into WASM in full, so an upstream that echoes the request back hands the contract the very
+plaintext the mechanism withheld — demonstrated here deliberately. Any contract handling real PII
+needs to filter its own response before returning it, and the docs' privacy claim should say so.
+
+---
+
+## 8. `getUsage()` returns an empty ledger despite real spend — **severity: medium**
+
+After 2 contract registrations, ~15 authenticated sessions, ~12 outbound HTTP calls, a
+profile upsert and 2 grant writes, the balance had dropped **3,401.68 tokens** (19,879.76 →
+16,598.32) and the balance row showed `version: 20` — i.e. 20 settled mutations.
+
+`getUsage({limit:100})` returns:
+
+```json
+{"balance":{"available":16598321881,"reserved":0,"last_settled_seq_no":0,
+            "version":20,"credit_exhausted":false,"storage_deposit":0},
+ "entries":[]}
+```
+
+`entries` is empty and `last_settled_seq_no` is stuck at `0` while `version` is `20`.
+There is no way to attribute spend to an operation, so you cannot cost-model an agent
+before running it — which matters directly for anyone expected to keep one running.
+
+## 9. Test-credit budget is smaller than it looks — **not a bug, a planning note**
+
+3,401 of 20,000 credits (**17%**) went on a single afternoon's spike that registered a
+contract exactly twice. Contract registration dominates. The published figure of
+"~25 agents and ~5,000 protected actions" is only reachable if you almost never redeploy;
+an iterative build burns the budget on registrations long before it runs out of actions.
+
+---
+
+## 10. Org-minted agents cannot make a single call — **severity: blocking**
+
+This blocks the platform's headline use case: an agent acting on a user's behalf.
+
+`T3nClient.createAgent()` mints an agent whose DID and secp256k1 key are generated
+**inside the TEE** — the key never leaves it, so the agent's only credential is the
+returned opaque bearer (`t3n_key_<id>.<secret>`), and its only call path is
+`POST /api/invoke`. It cannot open a `T3nClient` session, because it has no eth key to sign with.
+
+That single path fails on its first call:
+
+```
+POST /api/invoke   X-T3N-Api-Key: t3n_key_b1c5…
+→ HTTP 403
+{"error":"InsufficientCredit (account=9e4a0ebc…3209, required=10000000000, available=0)",
+ "code":"forbidden","request_id":"6e5d0598-1e07-4ccb-9b73-4f73bb741404"}
+```
+
+- `required = 10000000000` base units = **10,000 tokens** reserved for one call — half the
+  entire 20,000-token free grant, for a single invocation.
+- `available = 0`. A freshly minted agent has no balance.
+- There is no self-serve way to fund it. Tokens are documented as non-transferable, and
+  `token.transfer` is an admin-signed operation not exposed to tenants.
+
+So the documented flow — mint an agent, grant it access, let it act — **terminates at the
+first call** for every developer, and can only be unblocked by Terminal 3 funding the DID
+manually. The `common-errors` page mentions this in one row without stating that the
+requirement is 10,000 tokens or that it affects every org-minted agent.
+
+**Suggested fix:** have `createAgent` seed the agent from the creating tenant's balance, or
+expose a tenant→agent transfer, or charge the owning org rather than the agent.
+
+## 11. `delegation.check` returns a false green — **severity: medium**
+
+For the exact call that 403s above, the platform's own authorization oracle reports success:
+
+```json
+{"authorised": true, "disclosed": true,
+ "satisfied": [{"grant":"member_delegation","contract":"z:ae94…:probe",
+                "functions":["probe-placeholders"],"scopes":[]}],
+ "missing": []}
+```
+
+`delegation.check` models grants but not metering, so the preflight designed to tell you
+whether a call will succeed cannot predict the most common reason it won't. Either it should
+account for credit, or the docs should state that `authorised:true` is necessary but not sufficient.
+
+## 12. `/api/invoke` is restricted to `z:` contracts — **severity: low, undocumented**
+
+```
+POST /api/invoke  {contract_id:"tee:user/contracts", …}
+→ HTTP 400 {"error":"invoke is restricted to z: (tenant) contracts","code":"bad_request",
+            "request_id":"67a31b02-e17b-4758-b3c0-fb7d0135dc69"}
+```
+
+Since the bearer path is the *only* path an org-minted agent has (see #10), such an agent can
+never reach a core contract — including `tee:user/contracts`, the one that carries
+`agent-auth-update`. An agent therefore cannot inspect or manage its own grants. Undocumented.
+
+## Identity model, as actually implemented
+
+The docs imply you obtain three keys. The claim page issues **one**. The real model:
+
+| Identity | How it is created | Auth | Credits |
+|---|---|---|---|
+| **Tenant** | claim page (SSO) → `0x…` eth key + DID | `T3nClient` session (SIWE) | funded (20,000) |
+| **User** | any locally generated secp256k1 keypair; DID is minted on first `authenticate()` | `T3nClient` session | **0** |
+| **Agent** | `createOrganisation()` → `createAgent()`; key minted in-TEE, never exported | bearer only (`X-T3N-Api-Key`) | **0** |
+
+A fresh user DID also cannot receive a profile: `submitUserInput` fails with
+`email_not_verified: caller has no verified email and supplied no proving authenticator.
+Run otp-request + otp-verify first`. The claim-page tenant DID works only because SSO
+already bound a verified email to it.
+
+---
+
+## 13. Map ACLs are write-only — stale ACLs are undiagnosable — **severity: medium**
+
+`tenant.maps.create()` / `update()` take `readers` / `writers` as `{only: number[]}` of
+contract ids. Nothing reads them back. `tenant.maps.getStatus(tail)` returns only a lifecycle
+string:
+
+```
+maps.getStatus("secrets") -> "active"
+```
+
+Combined with #5 (`contract_id` is unreadable after re-registration), this means the most
+likely production failure on this platform — a redeploy silently orphaning a map ACL — can be
+neither predicted nor diagnosed through any API. You can only prevent it by re-applying ACLs
+on every deploy, or detect it *functionally* by having the contract attempt a read and
+watching it fail.
+
+Both mitigations are implemented here: `scripts/deploy.ts` re-points every ACL on every run,
+and `scripts/doctor.ts` calls `endpoint-list` as a live read probe instead of trusting metadata.
+
+**Suggested fix:** return `readers`/`writers` from `getStatus`, and expose `contract_id` on
+`listDetailed()`.
+
+---
+
+## Measured cost of a deployment
+
+| Operation | Approx. tokens |
+|---|---|
+| Full first deploy (1 register + 3 map creates + 2 seeds + 2 grants) | ~3,250 |
+| Redeploy with unchanged wasm (`deploy.ts` skips registration) | ~160 |
+| End-to-end demo (6 contract invocations, 1 real outbound call) | ~1,000 |
+| Whole build session (spike + gateway + demo + doctor + MCP) | ~6,800 of 20,000 |
+
+Contract registration dominates. The wasm-hash skip in `deploy.ts` exists specifically because
+of this: re-running deploy on unchanged code costs ~160 instead of ~1,850.

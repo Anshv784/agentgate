@@ -1,0 +1,167 @@
+/// Durable outbox host interface (T3-TS-028).
+///
+/// Contracts that need to emit externally-visible side effects
+/// (upstream HTTP to payment processors, webhooks, on-chain
+/// settlements, etc.) enqueue through this interface. The host
+/// writes the entry into the active transaction's write-set; after
+/// Raft commit, the leader-only drain worker emits upstream with an
+/// `Idempotency-Key` header and writes the terminal ack back to KV.
+///
+/// At-most-once upstream emission, for upstreams that support
+/// idempotency contracts. Connectors without such contracts are
+/// rejected at enqueue time — see `outbox-error::connector-not-
+/// idempotent`.
+///
+/// Split from `host:interfaces@1.0.0` so that adding the outbox
+/// iface doesn't force a 1.1.0 bump on every contract that only
+/// imports the stable interfaces. Same versioning pattern as
+/// `host:session-interfaces`.
+///
+/// Guest-side usage:
+///
+/// ```wit
+/// world my-contract {
+///     import host:interfaces/kv-store@1.0.0;
+///     import host:outbox/outbox@1.0.0;
+/// }
+/// ```
+
+package host:outbox@1.0.0;
+
+/// HTTP verbs accepted by the outbox. Kept independent of the
+/// sibling `http` interface's `verb` enum so this package versions
+/// on its own cadence.
+interface outbox {
+    enum verb {
+        get,
+        post,
+        put,
+        patch,
+        delete,
+    }
+
+    /// One outbound request frame. Frozen at enqueue time and
+    /// re-emitted verbatim by the drain worker, including the
+    /// `headers` list in the original order (signature-based
+    /// upstreams depend on header ordering).
+    record request {
+        method: verb,
+        url: string,
+        headers: list<tuple<string, string>>,
+        body: list<u8>,
+    }
+
+    /// Typed failure reasons produced by enqueue / status. Mirrors
+    /// `primitives::outbox::OutboxError` one-for-one.
+    variant outbox-error {
+        /// The idempotency key failed `validate_idk`: wrong length,
+        /// illegal byte, missing `@` separator, or prefix does not
+        /// match the calling contract's script name.
+        invalid-idk(string),
+
+        /// A pending or acked entry already exists under the same
+        /// idk with a different request digest. Guest must use a
+        /// new idk or cancel the prior entry.
+        idk-collision,
+
+        /// The calling contract has reached its per-contract pending
+        /// cap. Configurable via `outbox.max_pending_per_contract`.
+        outbox-full,
+
+        /// The guest called an outbox function outside an
+        /// `action.execute` tx scope. Always a misuse bug.
+        no-active-tx,
+
+        /// The request URL's host is not on the operator's
+        /// `outbox.allowed_upstream_hosts` allowlist. Carries the
+        /// rejected hostname for diagnostic logging.
+        host-not-allowed(string),
+
+        /// The request URL is structurally invalid — it does not
+        /// parse as a URL, has no host component, or has a scheme
+        /// the operator does not permit. Distinct from
+        /// `host-not-allowed` (which means the URL parsed cleanly
+        /// but the host is not on the allowlist) so contract authors
+        /// can branch on caller-input bugs without confusing them
+        /// with operator-policy denials. Carries a human-readable
+        /// diagnostic for log surfaces.
+        invalid-url(string),
+
+        /// Underlying KV operation failed. Carries a human-readable
+        /// diagnostic; not for programmatic branching.
+        kv(string),
+
+        /// A serde round-trip failed on a stored entry — implies a
+        /// schema drift or corrupt row.
+        decode(string),
+
+        /// `outbox.status` was called against a follower node. The
+        /// caller (SDK / API layer) must retry against the current
+        /// leader so it sees a consistent ack view (spec §4.3.4).
+        leader-only,
+    }
+
+    /// Ledger metadata populated by the host at read time from the
+    /// existing `IdxSeqnosByKey` index. `at-seq` is the ledger
+    /// sequence at which the ack commit landed — pass this to the
+    /// admin audit endpoint to fetch a Merkle proof.
+    record ack-metadata {
+        at-seq: u64,
+    }
+
+    /// Successful upstream emission. `response-digest` is the
+    /// SHA-256 of the upstream response body; it also lands in the
+    /// Merkle leaf of the ack commit (T3-TS-028 §8.1).
+    record committed-ack {
+        meta: ack-metadata,
+        upstream-ref: option<string>,
+        response-digest: list<u8>,
+    }
+
+    /// Terminal failure. `error-kind` is the short-string
+    /// representation of the typed failure variant (e.g.
+    /// `"attempts-exhausted"`, `"permanent-4xx:402"`,
+    /// `"connector-paused"`). Contracts parse if they need to branch
+    /// on the reason; most just propagate.
+    record failed-ack {
+        meta: ack-metadata,
+        error-kind: string,
+    }
+
+    /// Summary returned by `status`. The contract uses this to
+    /// branch between "enqueued but not yet emitted", "landed
+    /// upstream", and "terminally failed".
+    variant outbox-status {
+        /// Entry is in the pending queue.
+        pending,
+
+        /// Entry acked `Committed` by the drain worker.
+        committed(committed-ack),
+
+        /// Entry acked `Failed`.
+        failed(failed-ack),
+    }
+
+    /// Enqueue an outbound HTTP side-effect into the contract's
+    /// current transaction.
+    ///
+    /// The host fills in `script_name`, `function_name`,
+    /// `pii_did`, `created_at_ms`, and `request_digest` from its
+    /// own context before writing; the guest cannot spoof these.
+    ///
+    /// Idempotency semantics (T3-TS-028 §6):
+    /// - Same `idk` + same request digest already present →
+    ///   returns `Ok`. Safe for replication-lag retries.
+    /// - Same `idk` + different digest → `idk-collision`.
+    /// - New `idk` → writes both `outbox_pending[idk]` and the
+    ///   seq-ordered secondary index atomically with the rest of
+    ///   the contract's write-set.
+    enqueue: func(idk: string, request: request) -> result<_, outbox-error>;
+
+    /// Look up the terminal (or current) state of a previously
+    /// enqueued entry.
+    ///
+    /// Returns `ok(none)` when no entry is known for this `idk`.
+    /// Returns `err(invalid-idk)` for a malformed key.
+    status: func(idk: string) -> result<option<outbox-status>, outbox-error>;
+}

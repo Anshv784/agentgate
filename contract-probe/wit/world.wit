@@ -1,0 +1,28 @@
+/// Throwaway probe: determines which {{profile.*}} markers the host will
+/// actually resolve, and how it fails for the ones it won't.
+package z:agentgate-probe@0.1.0;
+
+world agentgate-probe {
+    import host:tenant/tenant-context@1.0.0;
+    import host:interfaces/logging@2.1.0;
+    import host:interfaces/kv-store@2.1.0;
+    import host:interfaces/http@2.1.0;
+    import host:interfaces/http-with-placeholders@2.1.0;
+
+    export contracts;
+}
+
+interface contracts {
+    record generic-input {
+        input:        option<list<u8>>,
+        user-profile: option<list<u8>>,
+        context:      option<list<u8>>,
+    }
+
+    /// Input  (JSON): { url, markers: ["first_name", "verified_contacts.email.value", ...] }
+    /// Output (JSON): { results: [{ marker, ok, verdict }] }
+    probe-placeholders: func(req: generic-input) -> result<list<u8>, string>;
+
+    /// Sanity check that plain `http` egress works at all, independent of placeholders.
+    probe-egress: func(req: generic-input) -> result<list<u8>, string>;
+}

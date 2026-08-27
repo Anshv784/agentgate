@@ -1,0 +1,40 @@
+/// T3-TS-033 §4.3 — host context surfaced to every tenant contract.
+///
+/// Read-only deterministic values from the dispatcher's tx scope.
+/// No I/O, no side-effects, no allocation beyond the small return
+/// shapes. Reads `TxMeta` for the cluster timestamp and the
+/// registry rows the dispatcher already loaded for policy
+/// evaluation, so resolution is O(1) per call after the per-tx
+/// cache is populated.
+package host:tenant@1.0.0;
+
+interface tenant-context {
+    /// Tenant DID under which this contract is running. The 20-byte
+    /// raw `CompactDid` shape — same as user / organisation DIDs.
+    /// Determined by the canonical `z:<tid>:<contract-tail>`
+    /// script-name parse at dispatch time.
+    tenant-did: func() -> list<u8>;
+
+    /// Stable interned id of the running contract (a `u32`). Resolves
+    /// back to the canonical `z:<tid>:<contract-tail>` name via
+    /// `idx:_tenant_contract_ids` for log / metric / audit emission.
+    /// `Caller::TenantContract { tenant, contract: id }` — same id.
+    contract-id: func() -> u32;
+
+    /// Calling user DID (the authenticated session DID), if the
+    /// contract was invoked through the Session API. `None` for
+    /// `/api/dev/exec` direct invocations and webhook dispatch
+    /// (T3-TS-033 §5.2 / §5.4).
+    calling-user-did: func() -> option<list<u8>>;
+
+    /// Cluster-wide monotonic timestamp pinned by the dispatcher.
+    /// Same `TxMeta.cluster_timestamp` source the system contracts
+    /// read via `host:interfaces/clock` — surfaced here so tenant
+    /// contracts don't pull in the broader clock interface for what
+    /// is a one-call need.
+    cluster-timestamp-secs: func() -> u64;
+
+    /// Current store sequence number. Useful for audit / replay
+    /// correlation (`idx:txs_by_did` rows are keyed by this seq).
+    seq-no: func() -> u64;
+}

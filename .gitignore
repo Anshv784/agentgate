@@ -1,0 +1,8 @@
+.env
+.env.*
+!.env.example
+node_modules/
+target/
+deployments.local.json
+*.log
+z-tenant-flight/

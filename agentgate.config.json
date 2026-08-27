@@ -1,0 +1,35 @@
+{
+  "contract": {
+    "tail": "agentgate",
+    "version": "0.1.0",
+    "wasm": "contract/target/wasm32-wasip2/release/z_agentgate.wasm"
+  },
+  "maps": ["secrets", "endpoints", "audit"],
+  "secrets": {
+    "resend_api_key": "$RESEND_API_KEY"
+  },
+  "endpoints": {
+    "resend": {
+      "base": "https://api.resend.com",
+      "secret_key": "resend_api_key",
+      "auth_header": "Authorization",
+      "auth_prefix": "Bearer ",
+      "allowed_paths": ["/emails"],
+      "allowed_placeholders": [
+        "first_name",
+        "last_name",
+        "verified_contacts.email.value"
+      ],
+      "response_fields": ["id"],
+      "extra_headers": []
+    }
+  },
+  "grants": [
+    { "grantee": "$T3N_TENANT_DID", "note": "self-grant: tenant stands in as data owner + caller" },
+    { "grantee": "$AGENT_DID", "note": "org-minted agent; blocked on funding, see docs/BUGS.md #10" }
+  ],
+  "grantDefaults": {
+    "functions": ["invoke-endpoint", "audit-list", "endpoint-list"],
+    "allowedHosts": ["api.resend.com"]
+  }
+}
