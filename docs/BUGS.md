@@ -195,8 +195,12 @@ POST /api/invoke   X-T3N-Api-Key: t3n_key_b1c5…
 - `required = 10000000000` base units = **10,000 tokens** reserved for one call — half the
   entire 20,000-token free grant, for a single invocation.
 - `available = 0`. A freshly minted agent has no balance.
-- There is no self-serve way to fund it. Tokens are documented as non-transferable, and
-  `token.transfer` is an admin-signed operation not exposed to tenants.
+- There is no self-serve way to fund it, and this is structural rather than an oversight.
+  Verified against SDK 5.2.0: `TokenTxKind` includes `"transfer"`, so the ledger supports it,
+  but the SDK exposes no transfer / fund / top-up method anywhere. `TenantTokenNamespace` has
+  exactly one method, `getUsage()`. `token.transfer` appears only in doc comments, as a
+  **cluster-admin** operation dispatched to `POST /api/admin` behind an `x-admin-signature`
+  header — the same class as `tenant.admit`. A tenant cannot seed its own agent by any path.
 
 So the documented flow — mint an agent, grant it access, let it act — **terminates at the
 first call** for every developer, and can only be unblocked by Terminal 3 funding the DID
