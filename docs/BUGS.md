@@ -169,7 +169,12 @@ an iterative build burns the budget on registrations long before it runs out of 
 
 ---
 
-## 10. Org-minted agents cannot make a single call — **severity: blocking**
+## 10. Org-minted agents cannot make a single call — **severity: blocking (resolved manually)**
+
+> **Update:** after requesting it over Telegram, Terminal 3 funded the agent DID by hand and
+> the same call now returns `HTTP 200`. Re-run `probes/agent-funded-check.ts` to confirm.
+> The finding stands: every developer hits this on their first agent, and clearing it
+> currently requires a human at Terminal 3. There is still no self-serve path.
 
 This blocks the platform's headline use case: an agent acting on a user's behalf.
 

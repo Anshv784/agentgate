@@ -22,3 +22,5 @@ funded `T3N_API_KEY`.
 
 > `identity-model.ts` mints a **new** org and agent every run and costs credits. It is
 > not idempotent — run it once.
+
+| `agent-funded-check.ts` | whether the agent DID can pay yet (**#10**) | `HTTP 200` once funded; `InsufficientCredit` before |

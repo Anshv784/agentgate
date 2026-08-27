@@ -36,7 +36,7 @@ rewrite.
 
 ## It works. Here is the receipt
 
-`npm run demo` against T3N testnet:
+`npm run demo` against T3N testnet — every call below is made by the org-minted agent:
 
 ```
 🛑 DENIED   marker outside the endpoint's allowlist  ({{profile.ssn}})
@@ -142,10 +142,19 @@ Three decisions came out of measuring the platform, not reading about it:
 
 ## Status
 
-Built and verified against T3N testnet with `@terminal3/t3n-sdk@5.2.0`.
+Built and verified end-to-end against T3N testnet with `@terminal3/t3n-sdk@5.2.0`, running the
+full three-identity flow:
 
-One platform issue blocks the full three-identity flow: org-minted agents are created with a
-zero balance and a single call reserves 10,000 tokens, so a minted agent cannot make its first
-call and there is no self-serve way to fund it ([`docs/BUGS.md#10`](docs/BUGS.md)). The grant to
-the agent DID is already in place; when the DID is funded, swapping the caller is one env var
-and no code change.
+| Principal | Holds | Role in the run above |
+|---|---|---|
+| **Tenant** | eth key, funded | owns the contract, seals the credential, enumerates the policy |
+| **Data owner** | own DID + profile | grants the agent; the markers resolve against their profile |
+| **Agent** | an opaque bearer token, nothing else | makes every call shown above |
+
+The agent's signing key was minted inside the TEE and never left it. It holds no API key, no
+URL, and no personal data, and cannot reach a core contract to inspect its own grants — yet it
+delivers a personalised email to a real inbox.
+
+Getting there required Terminal 3 to fund the agent DID by hand: a minted agent starts at zero
+and one call reserves 10,000 tokens, with no self-serve top-up ([`docs/BUGS.md#10`](docs/BUGS.md)).
+Every developer will hit that on their first agent.
