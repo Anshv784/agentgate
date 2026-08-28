@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "agentgate": {
+      "type": "stdio",
+      "command": "npm",
+      "args": [
+        "run",
+        "mcp"
+      ],
+      "env": {}
+    }
+  }
+}

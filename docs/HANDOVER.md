@@ -2,11 +2,22 @@
 
 Written so someone who has never seen this repo can operate it.
 
-## Intent
+## Orientation — what runs where
 
-**We would like to keep running AgentGate**, and we are applying to Terminal 3's startup
-program and listing page. This document exists anyway — a project one person can run is
-not a project, and the maintenance story shouldn't depend on us staying interested.
+There are only three moving parts, and you own two of them.
+
+| Part | Where it runs | Who owns it |
+|---|---|---|
+| The **contract** — all policy, credentials, and the audit ledger | inside a TEE on Terminal 3's nodes | you deploy it; Terminal 3 hosts it |
+| The **MCP server** — relays agent calls, holds the T3N session | wherever you start it | you |
+| `agentgate.config.json` — every endpoint and grant | your repo | you |
+
+There is no database, no hosted service, and no shared state with anyone else. Deploying
+is pushing a WASM binary and some ACLs. If you delete everything and re-run
+`npm run deploy`, you get it all back.
+
+Read [`ARCHITECTURE.md`](ARCHITECTURE.md) if you want to know *why* it is shaped this
+way. This document is only concerned with keeping it running.
 
 ## What must exist
 
@@ -83,6 +94,12 @@ exists for exactly that reason.
 Nothing in this repo depends on our tenant, our org, or our keys. There is no shared
 state and no hosted service to transfer — the contract runs on Terminal 3's nodes, and
 the MCP server runs wherever you run it.
+
+## Intent
+
+We would like to keep running AgentGate, and we are applying to Terminal 3's startup
+program and listing page. This runbook exists regardless — a project one person can run
+is not a project.
 
 ## Known open items
 

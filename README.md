@@ -5,10 +5,16 @@
 Give an LLM agent an API key and it can call anything, spend anything, and leak
 anything — and you find out afterwards, from the logs it wrote about itself.
 
-AgentGate puts a hardware-isolated enclave between the agent and the outside world.
+AgentGate is the layer in between. You write down, once, which endpoints exist and what
+each one is allowed to touch. The agent then asks for actions **by name**, and a Rust
+contract running inside an Intel TDX enclave decides whether to carry them out.
+
 The agent names an *endpoint*, not a URL. It never holds a credential. It never sees
 the user's personal data. And every attempt it makes — allowed or denied — lands in a
 ledger it cannot edit.
+
+That last point is the one people miss: **denials are recorded too.** An agent probing
+for what it can get away with leaves a trail.
 
 It ships as an **MCP server**, so any MCP client (Claude Code, Claude Desktop, Cursor,
 an SDK agent) gets governed tool calls by adding one config entry. No framework, no
@@ -147,10 +153,12 @@ Three decisions came out of measuring the platform, not reading about it:
 | `scripts/deploy.ts` | idempotent deploy; owns the `contract_id` ledger |
 | `scripts/doctor.ts` | pre-flight health check |
 | `scripts/demo.ts` | the run shown above |
-| `agentgate.config.json` | every endpoint and grant, declaratively (2 endpoints, contrasting policies) |
+| `agentgate.config.json` | every endpoint and grant, declaratively — this is the file you edit |
+| `.mcp.json` | drops the server into any MCP client that reads it, no setup |
 | `deployments.json` | committed ledger of every `contract_id` ever issued |
-| `docs/BUGS.md` | 13 findings against the platform |
-| `docs/ARCHITECTURE.md` | why the enclave boundary sits where it does |
+| `probes/` | one runnable script per platform bug — reproductions, not tests |
+| `docs/BUGS.md` | 13 findings against the platform, each with a reproduction |
+| `docs/ARCHITECTURE.md` | **start here** — one call followed end to end, and why the boundary sits where it does |
 | `docs/HANDOVER.md` | runbook for whoever operates this next |
 | `contract-probe/` | throwaway diagnostic used to map the placeholder surface — not shipped |
 

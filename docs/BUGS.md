@@ -4,6 +4,37 @@ Environment: `@terminal3/t3n-sdk@5.2.0`, node `cn-api.sg.testnet.t3n.terminal3.i
 Node v24.7.0, macOS 15 (arm64), rustc 1.97.1, target `wasm32-wasip2`.
 Tenant `did:t3n:ae94de9b…c005`.
 
+Every finding below was hit while building a real contract, not while reading docs.
+Where a bug can be shown rather than described, there is a runnable script in
+[`../probes/`](../probes/) that prints what the platform actually returned.
+
+## Index
+
+| # | Finding | Severity | Reproduction |
+|---|---|---|---|
+| 10 | Org-minted agents cannot make a single call | **blocking** *(resolved by hand)* | `bug10-12-agent-invoke.ts` |
+| 1 | Host duplicates `Content-Type`, corrupting the header upstream | **high** | `bug01-content-type-doubling.ts` |
+| 2 | `listContracts()` returns names `getContractVersion()` rejects | medium | `bug02-contract-naming.ts` |
+| 3 | `tips/placeholders-outbound-calls` ships Rust that cannot compile | medium | — |
+| 4 | Docs are a major version behind the SDK | medium | — |
+| 8 | `getUsage()` returns an empty ledger despite real spend | medium | `bug08-empty-usage-ledger.ts` |
+| 11 | `delegation.check` returns a false green | medium | `bug11-false-green-delegation.ts` |
+| 13 | Map ACLs are write-only — stale ACLs are undiagnosable | medium | — |
+| 5 | `contract_id` still unreadable after registration | confirmed, not fixed | — |
+| 6 | An SDK throw dumps ~2.1 MB of obfuscated source to stderr | low (DX) | — |
+| 7 | `getSelfEthAddress()` disagrees with the key's own address | low, unconfirmed | — |
+| 12 | `/api/invoke` is restricted to `z:` contracts | low, undocumented | `bug10-12-agent-invoke.ts` |
+| 9 | Test-credit budget is smaller than it looks | planning note | — |
+
+**#1 and #13 are the two worth fixing first.** #1 because it silently corrupts every
+documented example including Terminal 3's own reference contract, and #13 because it
+makes the most likely production failure impossible to diagnose.
+
+Three sections below are **not** bug reports, and are marked as such: a wrong hypothesis
+of ours corrected so nobody else chases it, a design note about what
+`http-with-placeholders` does and does not cover, and the identity model as actually
+implemented.
+
 ---
 
 ## 1. Host duplicates `Content-Type`, corrupting the header upstream — **severity: high**
