@@ -40,6 +40,19 @@ rewrite.
   api.resend.com   ← reached only if the data owner's grant permits this host
 ```
 
+## Where to look
+
+| If you want | Read |
+|---|---|
+| **proof it works** | the receipt directly below — four real denials and a real delivered email |
+| **how it works, and why the boundary sits where it does** | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — one call followed end to end |
+| **what it costs and what to do when it breaks** | [`docs/HANDOVER.md`](docs/HANDOVER.md) — runbook written for a stranger |
+| **the platform bugs found building it** | [`docs/BUGS.md`](docs/BUGS.md) — 13 findings, severity-indexed, each with a runnable reproduction in [`probes/`](probes/) |
+
+Two Rust crates live here: [`contract/`](contract/) is the gateway;
+[`contract-probe/`](contract-probe/) is a throwaway diagnostic used to map the platform's
+behaviour, kept as evidence for the bug report.
+
 ## It works. Here is the receipt
 
 `npm run demo` against T3N testnet — every call below is made by the org-minted agent:
@@ -161,7 +174,7 @@ Three decisions came out of measuring the platform, not reading about it:
 | `docs/BUGS.md` | 13 findings against the platform, each with a reproduction |
 | `docs/ARCHITECTURE.md` | **start here** — one call followed end to end, and why the boundary sits where it does |
 | `docs/HANDOVER.md` | runbook for whoever operates this next |
-| `contract-probe/` | throwaway diagnostic used to map the placeholder surface — not shipped |
+| `contract-probe/` | throwaway diagnostic that mapped the platform's behaviour — evidence for the bug report, [not something to build on](contract-probe/README.md) |
 
 ## Status
 
