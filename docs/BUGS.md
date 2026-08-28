@@ -8,10 +8,10 @@ Every finding below was hit while building a real contract, not while reading do
 Where a bug can be shown rather than described, there is a runnable script in
 [`../probes/`](../probes/) that prints what the platform actually returned.
 
-**Re-verified 2026-08-28.** Every finding was re-checked against the live testnet or the
-shipped SDK before submission — not trusted from notes. #1, #2, #7, #8, #10 and #12 were
-re-run against the node; #3, #4, #5, #6 and #13 were re-checked against `package.wit` and
-`dist/index.d.ts`. Three claims were wrong and are corrected here: #1 originally asserted
+**Re-verified 2026-08-28.** Every finding was re-checked before submission — not trusted
+from notes. #1, #2, #7, #8, #10 and #12 were re-run against the live node; #5, #6 and #13
+against `dist/index.d.ts`; #3 against `package.wit` *and* the live tips page; #4 and #9
+against the live docs and product pages. Three claims were wrong and are corrected here: #1 originally asserted
 that the `z-tenant-flight` reference contract ships the malformed header (it does not — it
 avoids it deliberately), #6 overstated the bundle size, and #9's starting balance was
 misstated. #11 has been reframed on evidence that survives #10 being funded.
@@ -126,8 +126,10 @@ The two pages contradict each other and the tips version is the wrong one.
 
 ## 4. Docs are a major version behind the SDK — **severity: medium**
 
-`reference.md` documents SDK ~3.x. Installed latest is **5.2.0**. Undocumented but present
-and working:
+The reference page carries **no version marker at all** — no version number, no changelog,
+nothing to tell you which SDK it describes. Installed latest is **5.2.0**, and the following
+is present and working in it while absent from that page (checked against the live page,
+2026-08-28):
 
 | Symbol | Docs say |
 |---|---|
@@ -218,9 +220,13 @@ before running it — which matters directly for anyone expected to keep one run
 ## 9. Test-credit budget is smaller than it looks — **not a bug, a planning note**
 
 3,401 of 20,000 credits (**17%**) went on a single afternoon's spike that registered a
-contract exactly twice. Contract registration dominates. The published figure of
-"~25 agents and ~5,000 protected actions" is only reachable if you almost never redeploy;
-an iterative build burns the budget on registrations long before it runs out of actions.
+contract exactly twice. Contract registration dominates.
+
+terminal3.io/products/agent-developer-kit advertises, verbatim: *"20,000 test credits —
+enough for 25 agents and ~5,000 protected actions."* That is only reachable if you almost
+never redeploy. An iterative build burns the budget on registrations long before it runs
+out of actions — and per the re-measured figures below, a single unchanged-wasm redeploy is
+~800 credits, so 25 of those alone would consume the entire grant without invoking anything.
 
 ---
 
