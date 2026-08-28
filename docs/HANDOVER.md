@@ -62,7 +62,7 @@ redeploy, no restart.
 | Symptom | Cause | Fix |
 |---|---|---|
 | `InsufficientCredit` | out of tokens, or the *calling* DID has none of its own | top up; note a minted agent DID starts at 0 and needs 10,000 for one call — see `docs/BUGS.md#10` |
-| `host/http.egress_denied` | the data owner's grant doesn't list that host | add it to `grantDefaults.allowedHosts`, redeploy |
+| `host/http.egress_denied: host '<x>' not in the authorised_hosts allowlist` | the data owner's grant doesn't list that host | add it to `grantDefaults.allowedHosts`, redeploy |
 | `outcome: "denied"` | working as designed — policy refused | read `reason`; widen `allowed_paths` / `allowed_placeholders` if genuinely intended |
 | `placeholder-unknown(x)` | the subject's profile has no field `x` | populate via `t3n.submitUserInput()`; a fresh DID needs email OTP first |
 | contract can't read its secrets | map ACL points at a superseded `contract_id` | `npm run deploy` |
@@ -70,6 +70,9 @@ redeploy, no restart.
 | HTTP 500, no detail | often egress or ACL surfacing as 500 | capture `request_id`, retry once, then report it |
 
 `npm run doctor` checks for most of these before they bite.
+
+Every error string in this table was observed, not guessed — the egress one was
+re-confirmed against the live node on 2026-08-28 by calling a host outside the allowlist.
 
 ## Cost model
 
