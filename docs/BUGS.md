@@ -8,12 +8,20 @@ Every finding below was hit while building a real contract, not while reading do
 Where a bug can be shown rather than described, there is a runnable script in
 [`../probes/`](../probes/) that prints what the platform actually returned.
 
+**Re-verified 2026-08-28.** Every finding was re-checked against the live testnet or the
+shipped SDK before submission — not trusted from notes. #1, #2, #7, #8, #10 and #12 were
+re-run against the node; #3, #4, #5, #6 and #13 were re-checked against `package.wit` and
+`dist/index.d.ts`. Three claims were wrong and are corrected here: #1 originally asserted
+that the `z-tenant-flight` reference contract ships the malformed header (it does not — it
+avoids it deliberately), #6 overstated the bundle size, and #9's starting balance was
+misstated. #11 has been reframed on evidence that survives #10 being funded.
+
 ## Index
 
 | # | Finding | Severity | Reproduction |
 |---|---|---|---|
 | 10 | Org-minted agents cannot make a single call | **blocking** *(resolved by hand)* | `bug10-12-agent-invoke.ts` |
-| 1 | Host duplicates `Content-Type`, corrupting the header upstream | **high** | `bug01-content-type-doubling.ts` |
+| 1 | Host duplicates `Content-Type`, corrupting the header upstream | **high** | `bug01-content-type-quick.ts` |
 | 2 | `listContracts()` returns names `getContractVersion()` rejects | medium | `bug02-contract-naming.ts` |
 | 3 | `tips/placeholders-outbound-calls` ships Rust that cannot compile | medium | — |
 | 4 | Docs are a major version behind the SDK | medium | — |
@@ -21,14 +29,15 @@ Where a bug can be shown rather than described, there is a runnable script in
 | 11 | `delegation.check` returns a false green | medium | `bug11-false-green-delegation.ts` |
 | 13 | Map ACLs are write-only — stale ACLs are undiagnosable | medium | — |
 | 5 | `contract_id` still unreadable after registration | confirmed, not fixed | — |
-| 6 | An SDK throw dumps ~2.1 MB of obfuscated source to stderr | low (DX) | — |
-| 7 | `getSelfEthAddress()` disagrees with the key's own address | low, unconfirmed | — |
+| 6 | An SDK throw dumps ~1.2 MB of obfuscated source to stderr | low (DX) | — |
+| 7 | `getSelfEthAddress()` disagrees with the key's own address | low | `bug07-self-eth-address.ts` |
 | 12 | `/api/invoke` is restricted to `z:` contracts | low, undocumented | `bug10-12-agent-invoke.ts` |
 | 9 | Test-credit budget is smaller than it looks | planning note | — |
 
-**#1 and #13 are the two worth fixing first.** #1 because it silently corrupts every
-documented example including Terminal 3's own reference contract, and #13 because it
-makes the most likely production failure impossible to diagnose.
+**#1 and #13 are the two worth fixing first.** #1 because it silently corrupts any
+contract that follows `tips/placeholders-outbound-calls`, and the only written record of
+the workaround is a code comment inside the reference contract. #13 because it makes the
+most likely production failure impossible to diagnose.
 
 Three sections below are **not** bug reports, and are marked as such: a wrong hypothesis
 of ours corrected so nobody else chases it, a design note about what
@@ -39,11 +48,12 @@ implemented.
 
 ## 1. Host duplicates `Content-Type`, corrupting the header upstream — **severity: high**
 
-A contract that sets its own `Content-Type` (exactly as the docs and the official
-`z-tenant-flight` reference do) causes the upstream server to receive a doubled,
-malformed value.
+A contract that sets its own `Content-Type` — exactly as
+`tips/placeholders-outbound-calls` shows — causes the upstream server to receive a
+doubled, malformed value.
 
-**Repro** — one contract, two calls differing only in whether the contract sets the header:
+**Repro** — `probes/bug01-content-type-quick.ts`. One contract, two calls differing only
+in whether the contract sets the header:
 
 | Contract sends | Upstream (`postman-echo.com/post`) receives | Upstream body parse |
 |---|---|---|
@@ -54,10 +64,16 @@ The host appends its own `Content-Type` instead of respecting the contract's.
 RFC 9110 makes `application/json,application/json` an invalid media type; lenient
 servers ignore it, strict ones 415 or silently drop the body — as postman-echo does here.
 
-**Why it matters:** every documented example sets its own headers.
-`z-tenant-flight/src/booking.rs:104` passes `headers: Some(duffel_headers(&api_key))`,
-so the reference integration is shipping malformed Content-Type to Duffel.
-The failure is silent — you get HTTP 200 with an empty parsed body.
+**Why it matters:** the behaviour is known internally but undocumented, and the two
+sources contradict each other. `z-tenant-flight` avoids it — `duffel_headers()` sets only
+`Authorization`, `Duffel-Version` and `Accept`, and `booking.rs:182` (repeated at
+`search.rs:193`) carries the comment *"Content-Type is set automatically by the host HTTP
+function via `.json()` — sending it explicitly creates a duplicate that Duffel rejects."*
+
+That comment is the only place this is written down. It is not in the API reference, not
+in the WIT doc comments, and `tips/placeholders-outbound-calls` still shows the broken
+pattern. A developer following the docs sets the header, gets HTTP 200 with an empty
+parsed body, and has nothing to search for.
 
 **Workaround:** pass `headers: None` for the Content-Type, or set only headers the
 host doesn't inject (e.g. `Authorization`). Needs confirming which headers are injected.
@@ -139,19 +155,27 @@ The `register-contract` doc flags this; it is still true in 5.2.0.
 
 ---
 
-## 6. An SDK throw dumps ~2.1 MB of obfuscated source to stderr — **severity: low (DX)**
+## 6. An SDK throw dumps ~1.2 MB of obfuscated source to stderr — **severity: low (DX)**
 
-`dist/index.esm.js` is minified *and* identifier-obfuscated. Any uncaught throw prints the
-whole bundle as the stack frame — it flooded a terminal and would flood CI logs. Source maps
-or a non-obfuscated build would fix it.
+`dist/index.esm.js` (1.19 MB; `dist/index.js` is another 1.20 MB) opens with the literal
+banner `/* t3n-sdk-obfuscated */` — it is minified *and* identifier-obfuscated. Any uncaught
+throw prints the whole bundle as the stack frame; it flooded a terminal and would flood CI
+logs. Source maps or a non-obfuscated build would fix it.
 
 ---
 
-## 7. `getSelfEthAddress()` disagrees with the key's own address — **severity: low, unconfirmed**
+## 7. `getSelfEthAddress()` disagrees with the key's own address — **severity: low**
 
-`eth_get_address(T3N_API_KEY)` → `0x83e911a2…f72b` (the address that authenticates).
-`t3n.getSelfEthAddress()` → `0x9a2cd86a…c4ee`.
-Unclear whether the second is a distinct managed/custodial wallet or a bug. Undocumented either way.
+```
+eth_get_address(T3N_API_KEY)  -> 0x83e911a21262a2648f03282f23d896812addf72b   (signs in)
+t3n.getSelfEthAddress()       -> 0x9a2cd86a6e7f8f4efbfc1bdaeb567a46fd30c4ee
+```
+
+The discrepancy is reproducible on the same authenticated session
+(`probes/bug07-self-eth-address.ts`). What remains unconfirmed is the *cause* — whether the
+second address is a distinct managed/custodial wallet or genuinely wrong. Either way the
+method name promises the caller's own address and does not return it, and neither reading
+is documented.
 
 ---
 
@@ -176,7 +200,7 @@ needs to filter its own response before returning it, and the docs' privacy clai
 ## 8. `getUsage()` returns an empty ledger despite real spend — **severity: medium**
 
 After 2 contract registrations, ~15 authenticated sessions, ~12 outbound HTTP calls, a
-profile upsert and 2 grant writes, the balance had dropped **3,401.68 tokens** (19,879.76 →
+profile upsert and 2 grant writes, the balance had dropped **3,401.68 tokens** (20,000.00 →
 16,598.32) and the balance row showed `version: 20` — i.e. 20 settled mutations.
 
 `getUsage({limit:100})` returns:
@@ -243,7 +267,8 @@ expose a tenant→agent transfer, or charge the owning org rather than the agent
 
 ## 11. `delegation.check` returns a false green — **severity: medium**
 
-For the exact call that 403s above, the platform's own authorization oracle reports success:
+Before Terminal 3 funded the agent, the call in #10 returned `403 InsufficientCredit`.
+The platform's own authorization oracle reported success for that same call:
 
 ```json
 {"authorised": true, "disclosed": true,
@@ -252,9 +277,12 @@ For the exact call that 403s above, the platform's own authorization oracle repo
  "missing": []}
 ```
 
-`delegation.check` models grants but not metering, so the preflight designed to tell you
-whether a call will succeed cannot predict the most common reason it won't. Either it should
-account for credit, or the docs should state that `authorised:true` is necessary but not sufficient.
+Re-run after funding, when the same call returns `HTTP 200`, `delegation.check` returns
+**byte-identical output**. It reports the same thing whether the call is about to succeed or
+about to fail on credit — which is the direct demonstration that it models grants but not
+metering. The preflight designed to tell you whether a call will succeed cannot predict the
+most common reason it won't. Either it should account for credit, or the docs should state
+that `authorised:true` is necessary but not sufficient.
 
 ## 12. `/api/invoke` is restricted to `z:` contracts — **severity: low, undocumented**
 

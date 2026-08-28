@@ -141,9 +141,10 @@ The host **appends** its own `Content-Type` rather than replacing yours, produci
 `application/json,application/json`. That is not a valid media type. Strict upstreams
 drop the body and return HTTP 200 with nothing parsed — a silent failure.
 
-This is [`BUGS.md#1`](BUGS.md), and it affects Terminal 3's own reference contract.
-AgentGate sets only `Authorization` plus whatever an endpoint declares in
-`extra_headers`.
+This is [`BUGS.md#1`](BUGS.md). The reference contract avoids it, but the only place that
+is written down is a code comment inside the reference contract — the docs' own tips page
+still shows the broken pattern. AgentGate sets only `Authorization` plus whatever an
+endpoint declares in `extra_headers`.
 
 ## Why a gateway and not an agent
 
