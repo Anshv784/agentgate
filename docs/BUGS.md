@@ -339,12 +339,33 @@ and `scripts/doctor.ts` calls `endpoint-list` as a live read probe instead of tr
 
 ## Measured cost of a deployment
 
-| Operation | Approx. tokens |
-|---|---|
-| Full first deploy (1 register + 3 map creates + 2 seeds + 2 grants) | ~3,250 |
-| Redeploy with unchanged wasm (`deploy.ts` skips registration) | ~160 |
-| End-to-end demo (6 contract invocations, 1 real outbound call) | ~1,000 |
-| Whole build session (spike + gateway + demo + doctor + MCP) | ~6,800 of 20,000 |
+Re-measured 2026-08-28 against the tenant balance, each figure taken from a quiescent
+baseline with a control read either side. Two of the original numbers were wrong; they are
+corrected here and the rest are labelled for what they are.
 
-Contract registration dominates. The wasm-hash skip in `deploy.ts` exists specifically because
-of this: re-running deploy on unchanged code costs ~160 instead of ~1,850.
+| Operation | Tokens | How |
+|---|---|---|
+| Redeploy, unchanged wasm (`deploy.ts` skips registration) | **802.50** | measured, three consecutive runs, identical each time |
+| One governed agent call (`/api/invoke`) | **0 to the tenant** | measured — see below |
+| Bare authenticated session, no work | **0** | measured, control |
+| Full first deploy (1 register + 3 map creates + 2 seeds + 2 grants) | ~3,250 | original build estimate, not re-measured |
+| Redeploy, changed wasm | ~1,850 | original build estimate, not re-measured |
+
+**Agent calls do not bill the tenant.** A full `npm run demo` — seven `/api/invoke` calls
+through the agent's bearer token — moved the tenant balance by exactly `0.00`. Agent calls
+are metered against the *agent's* DID, which is the same accounting that makes #10 blocking:
+the agent needs its own 10,000-token reservation and the tenant cannot see or fund it. Any
+cost table that lists a per-call figure without naming the account it comes out of is
+describing two different ledgers as one.
+
+The two figures still marked "estimate" were not re-measured deliberately: verifying them
+requires a wasm change, which mints a new `contract_id` (#5) and would invalidate the
+deployment this submission documents.
+
+**Caveat, and it is #8's fault.** Settlement is asynchronous and `last_settled_seq_no` is
+stuck at `0`, so a balance delta read immediately after an operation can attribute a charge
+to the wrong operation. An earlier pass here charged 802.50 to a demo run that in fact cost
+nothing — the figure was a lagging deploy charge. Every number above was therefore taken
+from a quiescent baseline and confirmed stable across a follow-up read. On a platform where
+`getUsage()` returns an empty ledger, that is the *only* way to cost anything, and it is not
+good enough for anyone who needs to budget before running.

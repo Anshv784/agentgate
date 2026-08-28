@@ -127,7 +127,8 @@ One file. No Rust, no redeploy of the contract.
 ```
 
 Then `npm run deploy`. It skips contract registration when the wasm is unchanged, so
-adding an endpoint costs ~160 credits instead of ~1,850.
+adding an endpoint costs ~800 credits rather than paying for a re-registration
+([measured](docs/BUGS.md); the figure this README originally carried was wrong by 5x).
 
 ## Why the design is shaped this way
 

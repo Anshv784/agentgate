@@ -37,7 +37,7 @@ const bump = (v: string) => { const p = v.split(".").map(Number); p[2]++; return
 let contractId: number | undefined = last?.contract_id;
 
 if (last?.wasm_sha256 === hash && !process.argv.includes("--force")) {
-  console.log(`register  SKIP (wasm unchanged, id ${contractId}, v${last.version}) — saves ~1700 credits`);
+  console.log(`register  SKIP (wasm unchanged, id ${contractId}, v${last.version}) — skips a contract registration`);
 } else {
   const version = last && last.version >= cfg.contract.version ? bump(last.version) : cfg.contract.version;
   const res = await tenant.contracts.register({ tail: cfg.contract.tail, version, wasm });

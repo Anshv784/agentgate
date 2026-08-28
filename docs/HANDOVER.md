@@ -45,7 +45,7 @@ the platform's most likely silent failure.
 ## Changing things
 
 **Add or change an endpoint** — edit `agentgate.config.json`, `npm run deploy`. No Rust,
-no contract redeploy, ~160 credits.
+no contract redeploy, ~800 credits.
 
 **Rotate a credential** — change it in `.env`, `npm run deploy`. Re-seeds the sealed map.
 
@@ -75,13 +75,19 @@ redeploy, no restart.
 
 | Operation | Approx. tokens |
 |---|---|
-| First deploy | ~3,250 |
-| Redeploy, unchanged wasm | ~160 |
-| Redeploy, changed wasm | ~1,850 |
-| One governed call | ~150 |
+| Redeploy, unchanged wasm | **~800** (measured 2026-08-28) |
+| One governed agent call | **0 to the tenant** — billed to the agent DID |
+| First deploy | ~3,250 (build estimate, not re-measured) |
+| Redeploy, changed wasm | ~1,850 (build estimate, not re-measured) |
 
 Budget is 20,000 free tokens. Registration dominates; the wasm-hash skip in `deploy.ts`
 exists for exactly that reason.
+
+Two things to know before you trust any of these. Agent calls bill the **agent's** balance,
+not yours — a full `npm run demo` costs your tenant nothing, which is the same accounting
+that makes `docs/BUGS.md#10` blocking. And settlement lags: `getUsage()` returns an empty
+ledger (`#8`), so a balance read taken straight after an operation can attribute the charge
+to the wrong one. Measure from a quiet baseline and confirm with a second read.
 
 ## If you take this over
 
