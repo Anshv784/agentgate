@@ -1,6 +1,8 @@
 // Shared session helpers. One place that knows how to build a client, so the
 // deploy/doctor/demo scripts can't drift apart.
 import "dotenv/config";
+// TODO(post-bounty-review): migrate to t3n-sdk 5.21.x and
+// host:tenant@2.0.0 after confirming submission compatibility.
 import {
   T3nClient, TenantClient, setEnvironment, loadWasmComponent, eth_get_address,
   metamask_sign, createEthAuthInput, fetchTrustedManifest, getNodeUrl,
