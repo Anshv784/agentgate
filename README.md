@@ -20,24 +20,38 @@ It ships as an **MCP server**, so any MCP client (Claude Code, Claude Desktop, C
 an SDK agent) gets governed tool calls by adding one config entry. No framework, no
 rewrite.
 
-```
-  MCP client (Claude / Cursor / your agent)
-    │  call_endpoint { endpoint: "resend", path: "/emails",
-    │                  body: { to: ["{{profile.verified_contacts.email.value}}"] } }
-    ▼
-  AgentGate MCP server            ← holds the T3N session; the model holds nothing
-    │
-    ▼
-┌─ z:<tid>:agentgate — TEE contract (Rust → WASM, Intel TDX) ───────────────┐
-│  1. every {{…}} marker must be profile.* AND on this endpoint's allowlist │
-│  2. path must be one the tenant enumerated — exact match, no globs        │
-│  3. credential read from the sealed z:<tid>:secrets map                   │
-│  4. host substitutes real PII inside the enclave (contract never sees it) │
-│  5. upstream response projected to declared fields only                   │
-│  6. ledger entry appended — for ALLOWED and DENIED alike                  │
-└───────────────────────────────────────────────────────────────────────────┘
-    ▼
-  api.resend.com   ← reached only if the data owner's grant permits this host
+```mermaid
+flowchart TD
+    client["MCP client<br/>Claude · Cursor · your agent"]
+    request["call_endpoint<br/>endpoint: resend<br/>path: /emails<br/>body: {{profile.verified_contacts.email.value}}"]
+    server["AgentGate MCP server<br/><small>holds the Terminal 3 session</small>"]
+    contract["TEE contract: z:&lt;tid&gt;:agentgate<br/>Rust → WASM · Intel TDX"]
+    policy{{"Policy enforcement"}}
+    checks["Exact path allowlist<br/>Profile placeholder allowlist<br/>Tenant grant verification"]
+    secrets["Sealed secrets map<br/>z:&lt;tid&gt;:secrets"]
+    pii["Host-side PII substitution<br/>values never enter the contract"]
+    response["Response projection<br/>declared fields only"]
+    audit["Append-only audit ledger<br/>allowed and denied attempts"]
+    api["Registered upstream API<br/>api.resend.com"]
+
+    client --> request --> server --> contract --> policy
+    policy --> checks
+    policy --> secrets
+    policy --> pii
+    checks -->|allowed| api
+    secrets --> api
+    pii --> api
+    api --> response --> audit
+    policy -->|denied| audit
+
+    classDef client fill:#1f2937,stroke:#94a3b8,color:#f8fafc
+    classDef gateway fill:#172554,stroke:#60a5fa,color:#eff6ff
+    classDef security fill:#422006,stroke:#f59e0b,color:#fffbeb
+    classDef output fill:#052e16,stroke:#4ade80,color:#f0fdf4
+    class client,request client
+    class server,contract gateway
+    class policy,checks,secrets,pii security
+    class response,audit,api output
 ```
 
 ## Where to look
