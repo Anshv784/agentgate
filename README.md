@@ -1,126 +1,196 @@
 # AgentGate
 
-AgentGate is a policy-enforcing outbound tool gateway for AI agents. It exposes governed actions through an MCP server and executes policy decisions in a Rust WebAssembly contract hosted by Terminal 3.
+**A governed tool-call gateway for AI agents, built on Terminal 3's ADK.**
 
-## Architecture
+Give an LLM agent an API key and it can call anything, spend anything, and leak
+anything — and you find out afterwards, from the logs it wrote about itself.
+
+AgentGate is the layer in between. You write down, once, which endpoints exist and what
+each one is allowed to touch. The agent then asks for actions **by name**, and a Rust
+contract running inside an Intel TDX enclave decides whether to carry them out.
+
+The agent names an *endpoint*, not a URL. It never holds a credential. It never sees
+the user's personal data. And every attempt it makes — allowed or denied — lands in a
+ledger it cannot edit.
+
+That last point is the one people miss: **denials are recorded too.** An agent probing
+for what it can get away with leaves a trail.
+
+It ships as an **MCP server**, so any MCP client (Claude Code, Claude Desktop, Cursor,
+an SDK agent) gets governed tool calls by adding one config entry. No framework, no
+rewrite.
 
 ```
-MCP client
-   |
-   | call_endpoint(endpoint, path, method, body)
-   v
-MCP server (mcp/server.ts)
-   |
-   v
-AgentGate contract (Rust -> WASM, z:<tenant>:agentgate)
-   |  validate endpoint, path, placeholders, grants, and response fields
-   |  read sealed credentials and invoke the host HTTP interface
-   |  append an audit record
-   v
-Registered upstream API
+  MCP client (Claude / Cursor / your agent)
+    │  call_endpoint { endpoint: "resend", path: "/emails",
+    │                  body: { to: ["{{profile.verified_contacts.email.value}}"] } }
+    ▼
+  AgentGate MCP server            ← holds the T3N session; the model holds nothing
+    │
+    ▼
+┌─ z:<tid>:agentgate — TEE contract (Rust → WASM, Intel TDX) ───────────────┐
+│  1. every {{…}} marker must be profile.* AND on this endpoint's allowlist │
+│  2. path must be one the tenant enumerated — exact match, no globs        │
+│  3. credential read from the sealed z:<tid>:secrets map                   │
+│  4. host substitutes real PII inside the enclave (contract never sees it) │
+│  5. upstream response projected to declared fields only                   │
+│  6. ledger entry appended — for ALLOWED and DENIED alike                  │
+└───────────────────────────────────────────────────────────────────────────┘
+    ▼
+  api.resend.com   ← reached only if the data owner's grant permits this host
 ```
 
-The agent selects a registered endpoint name rather than supplying an arbitrary URL. The contract requires exact path matches, restricts `{{profile.*}}` placeholders to the endpoint allowlist, and projects upstream responses to declared fields. Placeholder names are recorded in the audit ledger; substituted values are not.
+## Where to look
 
-## Security properties
+| If you want | Read |
+|---|---|
+| **proof it works** | the receipt directly below — four real denials and a real delivered email |
+| **how it works, and why the boundary sits where it does** | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — one call followed end to end |
+| **what it costs and what to do when it breaks** | [`docs/HANDOVER.md`](docs/HANDOVER.md) — runbook written for a stranger |
+| **the platform bugs found building it** | [`docs/BUGS.md`](docs/BUGS.md) — 13 findings, severity-indexed, each with a runnable reproduction in [`probes/`](probes/) |
 
-- **Endpoint allowlisting:** agents cannot introduce arbitrary hosts or paths.
-- **Placeholder scoping:** only profile fields explicitly allowed by the endpoint may be substituted.
-- **Credential isolation:** upstream credentials are loaded from the tenant's sealed secrets map.
-- **Response minimisation:** only declared response fields are returned.
-- **Auditability:** both allowed and denied attempts are appended to the ledger.
-- **Tenant-controlled grants:** the data owner controls permitted agent functions and hosts.
+Two Rust crates live here: [`contract/`](contract/) is the gateway;
+[`contract-probe/`](contract-probe/) is a throwaway diagnostic used to map the platform's
+behaviour, kept as evidence for the bug report.
 
-## Repository structure
+## It works. Here is the receipt
 
-| Path | Purpose |
-| --- | --- |
-| `contract/` | Production Rust contract and WIT bindings. |
-| `mcp/server.ts` | MCP server exposing governed tools. |
-| `scripts/t3n.ts` | Shared Terminal 3 client/session setup. |
-| `scripts/deploy.ts` | Idempotent deployment, map ACL setup, endpoint seeding, and grants. |
-| `scripts/doctor.ts` | Deployment and configuration pre-flight checks. |
-| `scripts/demo.ts` | End-to-end demonstration. |
-| `agentgate.config.json` | Declarative endpoints, secrets, maps, and grant defaults. |
-| `deployments.json` | Contract versions and IDs issued by deployment. |
-| `probes/` | Standalone platform behavior probes. |
-| `docs/` | Architecture, handover, and verified platform findings. |
+`npm run demo` against T3N testnet — every call below is made by the org-minted agent:
 
-## Requirements
-
-- Node.js 18 or newer
-- npm
-- Rust with the `wasm32-wasip2` target
-- A Terminal 3 testnet API key for deployment and live demos
-
-```bash
-rustup target add wasm32-wasip2
 ```
+🛑 DENIED   profile field outside the endpoint's allowlist  ({{profile.ssn}})
+            marker rejected: 'ssn' is not in this endpoint's allowed_placeholders
+🛑 DENIED   marker reaching for another namespace  ({{secret.resend_api_key}})
+            marker rejected: 'secret.resend_api_key' is not a profile marker
+🛑 DENIED   path the tenant never enumerated  (/domains)
+            path rejected: '/domains' is not in this endpoint's allowed_paths
+🛑 DENIED   endpoint that does not exist  (stripe)
+            unknown endpoint
+
+── policy is per-ENDPOINT, not per-host ──────────────────────────────
+   'resend' and 'resend-notify' share a host AND a credential.
+   The same marker is allowed on one and refused on the other.
+
+✅ ALLOWED  {{profile.first_name}} via 'resend'        (allowlisted there)
+            {"data":{"id":"d7299ce6-668f-47f2-8e22-8f3f96c0f255"},"status":200}
+🛑 DENIED   {{profile.first_name}} via 'resend-notify' (allowlist is empty)
+            marker rejected: 'first_name' is not in this endpoint's allowed_placeholders
+✅ ALLOWED  no markers via 'resend-notify'             (allowed, returns nothing)
+            {"data":{},"status":200}
+```
+
+Real emails were delivered. The recipient's address and name were resolved inside the
+enclave from the data owner's profile — they appear nowhere in the agent's input, the MCP
+transport, the contract's memory, or the ledger.
+
+The last line is the deny-by-default response projection: `resend-notify` declares no
+`response_fields`, so a successful call returns a status code and an empty object. Even the
+upstream's message id is withheld.
+
+The ledger afterwards:
+
+```
+denied     0  resend/emails         markers=["profile.ssn", …]        'ssn' not allowed here
+denied     0  resend/emails         markers=["secret.resend_api_key"] not a profile marker
+denied     0  resend/domains        markers=[]                        path not enumerated
+denied     0  stripe/emails         markers=[]                        unknown endpoint
+ok       200  resend/emails         markers=["first_name","last_name","verified_contacts.email.value"]
+denied     0  resend-notify/emails  markers=["profile.first_name", …] 'first_name' not allowed here
+ok       200  resend-notify/emails  markers=[]
+```
+
+Marker *names* are recorded. Marker *values* were never available to record.
 
 ## Quick start
 
 ```bash
 npm install
-cp .env.example .env
-# Set T3N_API_KEY and the other values required by .env.example.
-
-npm test       # Native Rust policy tests; no network or credits required.
-npm run build  # Build the contract WASM artifact.
-npm run deploy # Register/reconcile the deployment and grants.
-npm run doctor # Check an existing deployment.
-npm run demo   # Run the end-to-end testnet demonstration.
+cp .env.example .env          # add your T3N_API_KEY from terminal3.io/claim-page
+npm run test                  # 9 native policy tests, no network, no credits
+npm run build                 # Rust → wasm32-wasip2
+npm run deploy                # idempotent — safe to re-run
+npm run doctor                # pre-flight a deployment you didn't just create
+npm run demo                  # the run shown above
 ```
 
-The deploy script records contract IDs in `deployments.json`. If the WASM hash is unchanged, registration is skipped. When a new contract ID is issued, map ACLs are re-applied to the current ID.
-
-## MCP configuration
+Add to any MCP client:
 
 ```json
-{
-  "mcpServers": {
-    "agentgate": {
-      "command": "npx",
-      "args": ["tsx", "/absolute/path/to/agentgate/mcp/server.ts"]
-    }
-  }
-}
+{ "mcpServers": {
+    "agentgate": { "command": "npx", "args": ["tsx", "/path/to/agentgate/mcp/server.ts"] } } }
 ```
 
-The MCP server owns the Terminal 3 session. The model receives the governed tool interface, not the tenant API key or upstream credentials.
+## Adding an endpoint
 
-## Endpoint configuration
+One file. No Rust, no redeploy of the contract.
 
-Endpoints are declared in `agentgate.config.json`; adding or changing endpoint policy does not require Rust changes:
-
-```json
-{
+```jsonc
+// agentgate.config.json
+"endpoints": {
   "stripe": {
     "base": "https://api.stripe.com",
-    "secret_key": "stripe_api_key",
+    "secret_key": "stripe_api_key",        // key in z:<tid>:secrets
     "auth_header": "Authorization",
     "auth_prefix": "Bearer ",
-    "allowed_paths": ["/v1/customers"],
+    "allowed_paths": ["/v1/customers"],    // exact match only
     "allowed_placeholders": ["first_name", "verified_contacts.email.value"],
-    "response_fields": ["id"]
+    "response_fields": ["id"]              // everything else is dropped
   }
 }
 ```
 
-Paths are exact matches. `secret_key` refers to a value in the tenant's sealed secrets map. `response_fields` is an allowlist; fields not listed are removed from the response. Apply configuration changes with:
+Then `npm run deploy`. It skips contract registration when the wasm is unchanged, so
+adding an endpoint costs ~800 credits rather than paying for a re-registration
+([measured](docs/BUGS.md); the figure this README originally carried was wrong by 5x).
 
-```bash
-npm run deploy
-```
+## Why the design is shaped this way
 
-## Current status
+Three decisions came out of measuring the platform, not reading about it:
 
-The repository contains an end-to-end testnet implementation using `@terminal3/t3n-sdk@5.2.0`. Migration to the newer SDK and `host:tenant@2.0.0` interface is intentionally pending bounty-review results; see the migration note in `scripts/t3n.ts`.
+- **Denials return `Ok`, never `Err`.** Contract writes roll back on error, so returning
+  `Err` on a policy denial would roll back the audit entry recording that denial — an agent
+  could trip the policy repeatedly and leave no trace.
+- **Responses are projected, not passed through.** `http-with-placeholders` protects the
+  *outbound* leg only. The upstream response returns into WASM in full, so an endpoint that
+  echoes its request hands back the PII the markers withheld. Demonstrated in
+  [`docs/BUGS.md`](docs/BUGS.md).
+- **The contract sets no `Content-Type`.** The host appends its own rather than replacing
+  yours, producing `application/json,application/json`, which strict upstreams reject —
+  silently, with an HTTP 200 and an empty body. See [`docs/BUGS.md#1`](docs/BUGS.md).
 
-The project has been tested with tenant, data-owner, and agent identities. The agent uses an opaque bearer credential and does not receive the tenant API key, upstream credentials, URL policy, or substituted profile values.
+## Repo layout
 
-## Documentation
+| Path | What |
+|---|---|
+| `contract/` | the TEE contract — `policy.rs` is pure and natively tested, `gateway.rs` talks to the host |
+| `mcp/server.ts` | MCP server — 3 tools |
+| `scripts/deploy.ts` | idempotent deploy; owns the `contract_id` ledger |
+| `scripts/doctor.ts` | pre-flight health check |
+| `scripts/demo.ts` | the run shown above |
+| `agentgate.config.json` | every endpoint and grant, declaratively — this is the file you edit |
+| `.mcp.json` | drops the server into any MCP client that reads it, no setup |
+| `deployments.json` | committed ledger of every `contract_id` ever issued |
+| `probes/` | one runnable script per platform bug — reproductions, not tests |
+| `docs/BUGS.md` | 13 findings against the platform, each with a reproduction |
+| `docs/ARCHITECTURE.md` | **start here** — one call followed end to end, and why the boundary sits where it does |
+| `docs/HANDOVER.md` | runbook for whoever operates this next |
+| `contract-probe/` | throwaway diagnostic that mapped the platform's behaviour — evidence for the bug report, [not something to build on](contract-probe/README.md) |
 
-- [Architecture](docs/ARCHITECTURE.md) — request lifecycle and trust boundaries
-- [Handover](docs/HANDOVER.md) — deployment and operations runbook
-- [Platform findings](docs/BUGS.md) — verified constraints and runnable reproductions
-- [Probes](probes/README.md) — diagnostic probe index
+## Status
+
+Built and verified end-to-end against T3N testnet with `@terminal3/t3n-sdk@5.2.0`, running the
+full three-identity flow:
+
+| Principal | Holds | Role in the run above |
+|---|---|---|
+| **Tenant** | eth key, funded | owns the contract, seals the credential, enumerates the policy |
+| **Data owner** | own DID + profile | grants the agent; the markers resolve against their profile |
+| **Agent** | an opaque bearer token, nothing else | makes every call shown above |
+
+The agent's signing key was minted inside the TEE and never left it. It holds no API key, no
+URL, and no personal data, and cannot reach a core contract to inspect its own grants — yet it
+delivers a personalised email to a real inbox.
+
+Getting there required Terminal 3 to fund the agent DID by hand: a minted agent starts at zero
+and one call reserves 10,000 tokens, with no self-serve top-up ([`docs/BUGS.md#10`](docs/BUGS.md)).
+Every developer will hit that on their first agent.
